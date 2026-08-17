@@ -223,6 +223,11 @@ fleet_sync_relay_filtered_output() {
       *': skipped:'*) echo "FLEET_SYNC: $line" ;;
       *': STUCK:'*) echo "FLEET_SYNC: $line" ;;
       *': recovered:'*) echo "FLEET_SYNC: $line" ;;
+      # A branch deletion is destructive and a retention explains why one was
+      # refused. Both must reach the digest the captain actually reads; a
+      # silently pruned ref is how unlanded work disappears without a message.
+      *': pruned:'*) echo "FLEET_SYNC: $line" ;;
+      *': retained:'*) echo "FLEET_SYNC: $line" ;;
     esac
   done < "$tmp"
 }
@@ -750,14 +755,24 @@ secondmate_handoff_detect() {
   done
 }
 
+# The command an operator is actually offered, and therefore the one that
+# decides what code lands on the machine. Prefer a pinned, checksum-verified
+# installer whenever one exists: bin/fm-install-treehouse.sh fetches an exact
+# release asset, verifies its SHA-256, bounds the download, and asserts the
+# installed version, where the upstream `curl | sh` line executes whatever the
+# publishing branch holds at that moment with no pin and no integrity check.
+# Where no pinned installer exists yet, the unpinned nature is stated in the
+# offered command itself, so the captain approves a known risk rather than an
+# invisible one. Any tool added here that ships release assets should get a
+# pinned installer rather than a fetch-and-execute pipeline.
 install_cmd() {
   case "$1" in
     tmux|node|git|gh|curl|jq|orca|zellij) echo "brew install $1  # or the platform's package manager" ;;
     cmux) echo "brew install --cask cmux  # or see https://cmux.com" ;;
-    treehouse) echo "curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh" ;;
-    no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
-    gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks" ;;
-    tasks-axi|quota-axi) echo "npm install -g $1" ;;
+    treehouse) echo "bin/fm-install-treehouse.sh \"\$HOME/.local/bin\"  # pinned release asset, SHA-256 verified" ;;
+    no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh  # UNPINNED: runs whatever main holds now" ;;
+    gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks  # UNPINNED: resolves to latest" ;;
+    tasks-axi|quota-axi) echo "npm install -g $1  # UNPINNED: resolves to latest" ;;
     *) return 1 ;;
   esac
 }
@@ -784,7 +799,13 @@ missing_tool_diagnostic() {
 # fm_backend_required_tools (bin/fm-backend.sh). So a herdr/zellij/cmux home is
 # never told tmux is missing, and only orca drops treehouse. A backend value with
 # no verified dependency set is reported before the universal checks continue.
-COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
+# jq belongs here even though nothing dispatches on it: every stdin-transport
+# PreToolUse guard extracts its payload with jq and allows unconditionally when
+# jq is absent (a deliberate fail-open, so a missing tool cannot brick the
+# harness). Without jq in this list a machine with no jq is told node and gh are
+# missing but never that the whole guard layer is inert - the one missing tool
+# whose absence is invisible in its own effect.
+COMMON_TOOLS="node git gh jq no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
 BACKEND=$(fm_backend_name)
 BACKEND_VALID=1
 if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
@@ -1134,6 +1155,10 @@ detect_local_tools() {
       || missing_tool_diagnostic "$t"
   done
   for t in $COMMON_TOOLS; do
+    # A tool the resolved backend also requires was already reported above with
+    # that backend's own availability test, which is the more precise one. Say it
+    # once: two identical MISSING lines read as two problems.
+    case " $BACKEND_TOOLS " in *" $t "*) continue ;; esac
     command -v "$t" >/dev/null || missing_tool_diagnostic "$t"
   done
   # The treehouse lease-support upgrade check is only relevant when the resolved

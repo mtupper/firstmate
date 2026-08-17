@@ -84,13 +84,29 @@ SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
 }
 
+# Every merge needs an authority. The cases below are about recording, URL
+# parsing, and merge-method forwarding rather than about authority, so this
+# supplies the captain's word by default and steps aside when a case states its
+# own --authority.
 run_pr_merge() {
   local case_dir=$1 rc; shift
+  local -a args=()
+  local has_authority=0 a
+  for a in "$@"; do
+    case "$a" in --authority|--authority=*) has_authority=1 ;; esac
+  done
+  if [ "$has_authority" -eq 0 ] && [ "$#" -ge 2 ]; then
+    args=("$1" "$2" --authority captain)
+    shift 2
+    args+=("$@")
+  else
+    args=("$@")
+  fi
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   PATH="$case_dir/fakebin:$PATH" \
-    "$PR_MERGE" "$@"
+    "$PR_MERGE" "${args[@]+"${args[@]}"}"
   rc=$?
   if [ "${case_dir##*/}" = unsafe-url-segment ] && [ "$rc" -eq 2 ]; then
     echo 'error: PR URL must match https://github.com/<owner>/<repo>/pull/<number>' >&2
@@ -301,6 +317,159 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+# --- merge authority (AGENTS.md hard rule 2) --------------------------------
+# The rule is "never merge a PR without the captain's explicit word", with a
+# project's standing yolo posture as the only relaxation. These cases prove the
+# script refuses to act when neither is stated, refuses a standing-authority
+# claim on a task that was never dispatched with one, and leaves a durable
+# record of whichever authority it did act on.
+
+test_refuses_without_authority() {
+  local case_dir rc
+  case_dir=$(make_case no-authority)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 1111111111111111111111111111111111111111
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" PATH="$case_dir/fakebin:$PATH" \
+    "$PR_MERGE" task-x1 https://github.com/example/repo/pull/31 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 2 "$rc" "no-authority: fm-pr-merge should refuse"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "no-authority: gh-axi pr merge was invoked with no stated authority"
+  assert_absent "$case_dir/state/task-x1.merge-approval" \
+    "no-authority: an approval record was written despite the refusal"
+  pass "fm-pr-merge refuses to merge when no authority is stated"
+}
+
+test_refuses_unknown_authority() {
+  local case_dir rc
+  case_dir=$(make_case bad-authority)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 2222222222222222222222222222222222222222
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/32 --authority nobody \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 2 "$rc" "bad-authority: fm-pr-merge should refuse an unknown authority"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "bad-authority: gh-axi pr merge was invoked for an unknown authority"
+  pass "fm-pr-merge refuses an authority it does not recognize"
+}
+
+test_yolo_authority_refused_when_task_has_none() {
+  local case_dir rc
+  case_dir=$(make_case yolo-off)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 3333333333333333333333333333333333333333
+  : > "$case_dir/gh-axi.log"
+  printf 'yolo=off\n' >> "$case_dir/state/task-x1.meta"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/33 --authority yolo \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "yolo-off: fm-pr-merge should refuse standing authority"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "yolo-off: gh-axi pr merge ran for a task dispatched with yolo off"
+  pass "fm-pr-merge refuses standing authority on a task dispatched with yolo off"
+}
+
+test_yolo_authority_refused_when_meta_is_silent() {
+  local case_dir rc
+  case_dir=$(make_case yolo-absent)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 4444444444444444444444444444444444444444
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/34 --authority yolo \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "yolo-absent: a meta with no yolo line confers no standing authority"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "yolo-absent: gh-axi pr merge ran for a task whose meta records no posture"
+  pass "fm-pr-merge treats a missing yolo posture as no standing authority"
+}
+
+test_yolo_authority_allowed_when_task_carries_it() {
+  local case_dir
+  case_dir=$(make_case yolo-on)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 8888888888888888888888888888888888888888
+  : > "$case_dir/gh-axi.log"
+  printf 'yolo=on\n' >> "$case_dir/state/task-x1.meta"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/35 --authority yolo \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "yolo-on: fm-pr-merge should merge on a task dispatched with yolo on"
+
+  grep -qxF 'pr merge 35 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "yolo-on: gh-axi pr merge was not invoked"
+  assert_grep 'authority=yolo' "$case_dir/state/task-x1.merge-approval" \
+    "yolo-on: the exercised authority was not recorded"
+  pass "fm-pr-merge merges on standing authority when the task carries it"
+}
+
+test_records_the_authority_it_acted_on() {
+  local case_dir
+  case_dir=$(make_case authority-record)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 9999999999999999999999999999999999999999
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/36 --authority captain \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "authority-record: fm-pr-merge failed"
+
+  assert_grep 'authority=captain' "$case_dir/state/task-x1.merge-approval" \
+    "authority-record: the exercised authority was not recorded"
+  assert_grep 'pr=https://github.com/example/repo/pull/36' "$case_dir/state/task-x1.merge-approval" \
+    "authority-record: the approved PR was not recorded"
+  pass "fm-pr-merge leaves a durable record naming the authority and the PR"
+}
+
+test_refuses_when_an_approval_names_a_different_pr() {
+  local case_dir rc
+  case_dir=$(make_case approval-mismatch)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" aaaa111111111111111111111111111111111111
+  : > "$case_dir/gh-axi.log"
+  printf 'task=task-x1\npr=https://github.com/example/repo/pull/1\nauthority=captain\n' \
+    > "$case_dir/state/task-x1.merge-approval"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/37 --authority captain \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "approval-mismatch: fm-pr-merge should refuse a second, different PR"
+  assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+    "approval-mismatch: gh-axi pr merge ran against a mismatched approval record"
+  pass "fm-pr-merge refuses when the task already carries an approval for another PR"
+}
+
+test_refuses_without_authority
+test_refuses_unknown_authority
+test_yolo_authority_refused_when_task_has_none
+test_yolo_authority_refused_when_meta_is_silent
+test_yolo_authority_allowed_when_task_carries_it
+test_records_the_authority_it_acted_on
+test_refuses_when_an_approval_names_a_different_pr
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded

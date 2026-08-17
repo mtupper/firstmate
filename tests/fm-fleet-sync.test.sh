@@ -470,6 +470,142 @@ test_bootstrap_relays_recovered_and_stuck() {
   pass "bootstrap relays recovered: and STUCK: fleet-sync outcomes"
 }
 
+# --- branch prune safety ----------------------------------------------------
+# `git branch -D` discards commits that may exist nowhere else, and it removes
+# the branch's own reflog with them. GitHub's "automatically delete head branches
+# on merge" makes a branch's upstream "[gone]" as a matter of routine, so the
+# trigger is ordinary rather than exceptional. These cases pin that pruning is
+# opt-in, that opting in still refuses to delete unlanded work, and that whatever
+# it does delete is visible in the digest the captain reads.
+
+# build_gone_branch <home> <name> <branch>: a clone carrying <branch> with a
+# configured upstream that has since been deleted on the origin, plus one commit
+# made locally after the last push - work that exists only in this clone. Echoes
+# the clone path.
+build_gone_branch() {
+  local home=$1 name=$2 branch=$3 clone work
+  clone=$(build_pair "$home" "$name")
+  work="$home/work-$name"
+
+  git -C "$clone" checkout -q -b "$branch"
+  commit_file "$clone" "$branch.txt" pushed "pushed work on $branch"
+  git -C "$clone" push -q -u origin "$branch"
+  # The commit that exists only here: added after the last push, exactly the
+  # shape a rebase, an amend, or an ordinary "I'll push later" leaves behind.
+  commit_file "$clone" "$branch.txt" unpushed "unpushed work on $branch"
+
+  git -C "$work" push -q origin --delete "$branch"
+  git -C "$clone" checkout -q main
+  git -C "$clone" fetch -q origin --prune
+  printf '%s\n' "$clone"
+}
+
+branch_exists() {
+  git -C "$1" show-ref --verify --quiet "refs/heads/$2"
+}
+
+test_prune_is_off_by_default() {
+  local home clone
+  home=$(new_home)
+  clone=$(build_gone_branch "$home" prune-default feature-x)
+
+  run_sync "$home" >/dev/null
+
+  branch_exists "$clone" feature-x \
+    || fail "a branch with unpushed commits was deleted by a default session-start sync"
+  pass "pruning is off unless the home opts in"
+}
+
+test_prune_refuses_a_branch_whose_commits_are_not_on_the_default_branch() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_gone_branch "$home" prune-unlanded feature-y)
+
+  out=$(FM_FLEET_PRUNE=1 run_sync "$home")
+
+  branch_exists "$clone" feature-y \
+    || fail "an opted-in prune deleted a branch holding commits that exist nowhere else"
+  assert_contains "$out" "prune-unlanded: retained: feature-y" \
+    "the refusal to prune was not reported"
+  pass "an opted-in prune still refuses a branch whose commits are not on the default branch"
+}
+
+test_prune_deletes_a_branch_whose_commits_landed() {
+  local home clone work out
+  home=$(new_home)
+  clone=$(build_pair "$home" prune-landed)
+  work="$home/work-prune-landed"
+
+  # A branch whose commit reached the default branch: an ordinary merge, so the
+  # branch tip is an ancestor of origin/main and nothing is lost by deleting it.
+  git -C "$clone" checkout -q -b feature-z
+  commit_file "$clone" feature.txt landed "landed work"
+  git -C "$clone" push -q -u origin feature-z
+  git -C "$clone" checkout -q main
+  git -C "$work" fetch -q origin feature-z
+  git -C "$work" merge -q --ff-only FETCH_HEAD
+  git -C "$work" push -q origin main
+  git -C "$work" push -q origin --delete feature-z
+  git -C "$clone" fetch -q origin --prune
+
+  out=$(FM_FLEET_PRUNE=1 run_sync "$home")
+
+  branch_exists "$clone" feature-z \
+    && fail "an opted-in prune kept a branch whose commits are already on the default branch"
+  assert_contains "$out" "prune-landed: pruned: feature-z" \
+    "the deletion was not reported"
+  pass "an opted-in prune deletes a branch whose commits provably landed"
+}
+
+test_prune_leaves_a_branch_that_was_never_pushed() {
+  local home clone
+  home=$(new_home)
+  clone=$(build_pair "$home" prune-nopush)
+  git -C "$clone" checkout -q -b local-only-branch
+  commit_file "$clone" local.txt v1 "local work"
+  git -C "$clone" checkout -q main
+
+  FM_FLEET_PRUNE=1 run_sync "$home" >/dev/null
+
+  branch_exists "$clone" local-only-branch \
+    || fail "a branch with no upstream at all was deleted"
+  pass "a branch that was never pushed has no gone upstream and is untouched"
+}
+
+test_symlinked_project_entry_is_skipped() {
+  local home real out
+  home=$(new_home)
+  real=$(build_pair "$home" real-clone)
+  advance_origin "$home" real-clone C1
+  # Move the clone aside and leave a symlink in its place: the shape an operator
+  # creates by linking a real working repo into projects/.
+  mv "$real" "$home/outside-repo"
+  ln -s "$home/outside-repo" "$real"
+
+  out=$(run_sync "$home")
+
+  assert_contains "$out" "real-clone: skipped: symlinked project entry" \
+    "a symlinked project entry was not reported as skipped"
+  [ "$(head_sha "$home/outside-repo")" = "$(git -C "$home/outside-repo" rev-parse HEAD)" ] \
+    || fail "symlink target head moved"
+  assert_not_contains "$out" "real-clone: fast-forwarded" \
+    "a symlinked project entry was fast-forwarded"
+  pass "a symlinked project entry is reported and left alone, never synced or pruned"
+}
+
+test_bootstrap_relays_prune_outcomes() {
+  local home out
+  home=$(new_home)
+  build_gone_branch "$home" prune-relay feature-w >/dev/null
+
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_FLEET_PRUNE=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+
+  assert_contains "$out" "FLEET_SYNC: prune-relay: retained: feature-w" \
+    "bootstrap did not relay the prune outcome into the digest"
+  pass "bootstrap relays prune outcomes so a branch deletion is never silent"
+}
+
 # --- packed-refs.lock guard tests -------------------------------------------
 
 test_orphaned_stale_packed_refs_lock_recovers() {
@@ -620,6 +756,12 @@ test_single_project_by_projects_relative_name_ignores_cwd_shadow
 test_single_project_unresolvable_name_still_skips
 test_whole_fleet_form
 test_bootstrap_relays_recovered_and_stuck
+test_prune_is_off_by_default
+test_prune_refuses_a_branch_whose_commits_are_not_on_the_default_branch
+test_prune_deletes_a_branch_whose_commits_landed
+test_prune_leaves_a_branch_that_was_never_pushed
+test_symlinked_project_entry_is_skipped
+test_bootstrap_relays_prune_outcomes
 test_orphaned_stale_packed_refs_lock_recovers
 test_live_packed_refs_lock_is_never_removed
 test_live_git_cwd_in_clone_dir_blocks_removal

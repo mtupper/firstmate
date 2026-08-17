@@ -13,8 +13,12 @@
 # stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
 # and fetch failures.
-# Pruning never deletes the checked-out branch or a branch that still has a
-# worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
+# Pruning is OPT-IN (FM_FLEET_PRUNE=1) because it force-deletes refs; teardown
+# already drops a task's own branch behind its landed-work proof. When enabled it
+# never touches the checked-out branch or a branch that still has a worktree, and
+# it deletes a branch outside firstmate's own fm/<id> namespace only after proving
+# that branch's commits are already on origin/<default>. Every deletion and every
+# retention is printed and relayed into the session-start digest.
 # When the fetch fails on an orphaned .git/packed-refs.lock (left by a ref rewrite
 # killed mid-write - e.g. a timed-out bootstrap sync or a teardown process kill),
 # it is retried with a bounded wait and removed only when provably stale; see
@@ -213,18 +217,43 @@ fetch_with_packed_refs_lock_guard() {
   return "$rc"
 }
 
+# True when the branch's content is provably already on $BASE, so deleting the
+# ref discards nothing that exists only here. Two independent proofs, either
+# sufficient: the tip is an ancestor of $BASE (an ordinary merge), or every
+# commit on the branch has an equivalent patch already applied to $BASE, which
+# is what `git cherry` reports with a leading "-". A squash merge that collapsed
+# several commits into one is not provable this way and correctly fails the
+# test, so the branch is kept rather than force-deleted on a guess.
+branch_content_landed() {  # <branch>
+  local branch=$1 cherry
+  git -C "$PROJ" merge-base --is-ancestor "$branch" "$BASE" 2>/dev/null && return 0
+  cherry=$(git -C "$PROJ" cherry "$BASE" "$branch" 2>/dev/null) || return 1
+  ! printf '%s\n' "$cherry" | grep -q '^+'
+}
+
 prune_gone_branches() {
   # Delete local branches whose upstream tracking branch is gone - the remote
   # branch was deleted, which in this fleet means its PR merged - as long as
   # nothing still needs them. Never the checked-out branch, and never a branch
-  # that still has a worktree (a live or not-yet-torn-down task). "Gone" plus
-  # "no worktree" already proves the work landed: teardown removes a branch's
-  # worktree only after confirming the work reached the remote. We deliberately
-  # do NOT also require the branch to be an ancestor of origin/<default> - PRs in
-  # this fleet are squash-merged, so a merged branch is never an ancestor and
-  # such a check would prune nothing. The no-worktree guard is the real safety
-  # net. Set FM_FLEET_PRUNE=0 to skip pruning entirely.
-  [ "${FM_FLEET_PRUNE:-1}" != "0" ] || return 0
+  # that still has a worktree (a live or not-yet-torn-down task).
+  #
+  # OPT-IN, because this is `branch -D`: it deletes a ref whose commits may
+  # exist nowhere else, and it also removes that branch's reflog, so recovery
+  # needs `git fsck --lost-found`. GitHub's "automatically delete head branches
+  # on merge" makes a branch "[gone]" as a matter of routine, so the trigger is
+  # ordinary rather than exceptional. Task branches do not need this path at
+  # all: bin/fm-teardown.sh already drops a task's own branch, and only after
+  # its landed-work proof passes. The branches a session-start sweep would
+  # additionally catch are therefore the ones teardown did not finish - exactly
+  # the ones worth keeping. Set FM_FLEET_PRUNE=1 to opt in.
+  #
+  # Even when enabled, "gone + no worktree" is accepted as proof of landing only
+  # for firstmate's own fm/<id> task branches, where teardown's contract makes it
+  # true. Any other branch - a human's ordinary branch living in the same clone -
+  # must additionally pass branch_content_landed, and is otherwise kept and
+  # reported as "retained:". Both outcomes are relayed into the session-start
+  # digest by bin/fm-bootstrap.sh, so a deletion is never silent.
+  [ "${FM_FLEET_PRUNE:-0}" != "0" ] || return 0
 
   local worktree_branches current refline branch track
   worktree_branches=$(git -C "$PROJ" worktree list --porcelain 2>/dev/null \
@@ -240,8 +269,17 @@ prune_gone_branches() {
     if printf '%s\n' "$worktree_branches" | grep -Fxq -- "$branch"; then
       continue
     fi
+    case "$branch" in
+      fm/*) ;;
+      *)
+        if ! branch_content_landed "$branch"; then
+          echo "$label: retained: $branch (upstream gone, but its commits are not on $BASE)"
+          continue
+        fi
+        ;;
+    esac
     if git -C "$PROJ" branch -D -- "$branch" >/dev/null 2>&1; then
-      echo "$label: pruned $branch"
+      echo "$label: pruned: $branch"
     fi
   done < <(git -C "$PROJ" for-each-ref \
     --format='%(refname:short) %(upstream:track)' refs/heads 2>/dev/null)
@@ -296,6 +334,15 @@ sync_project() {
   PROJ=$1
   label=$(project_label)
 
+  # A symlinked entry is not one of firstmate's own clones. `[ -d ]` follows the
+  # link, so without this test a symlink pointing at a real working repo would
+  # get its default branch fast-forwarded and its branches considered for
+  # pruning - a repo full of hand-made branches treated as disposable fleet
+  # state. Report it rather than dropping it silently: the operator put it there.
+  if [ -L "${PROJ%/}" ]; then
+    echo "$label: skipped: symlinked project entry, not a clone this home owns"
+    return 0
+  fi
   if [ ! -d "$PROJ" ]; then
     echo "$label: skipped: not a directory"
     return 0
@@ -324,8 +371,6 @@ sync_project() {
     return 0
   fi
 
-  prune_gone_branches || true
-
   DEFAULT=$(default_branch) || {
     echo "$label: skipped: cannot determine default branch"
     return 0
@@ -335,6 +380,11 @@ sync_project() {
     echo "$label: skipped: $BASE does not exist"
     return 0
   fi
+
+  # After $BASE, never before: prune_gone_branches proves a non-task branch
+  # landed by comparing it against $BASE, so a clone whose default branch cannot
+  # be resolved gets no pruning rather than unproven pruning.
+  prune_gone_branches || true
 
   cur=$(git -C "$PROJ" symbolic-ref --short HEAD 2>/dev/null || echo "")
   dirty=no

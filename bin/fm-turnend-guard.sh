@@ -102,8 +102,10 @@ PAYLOAD=$(cat 2>/dev/null || true)
 
 # jq is the repo's established JSON dependency (bin/fm-x-poll.sh uses the same
 # "missing jq -> silent no-op" degrade). Without it we cannot safely read the
-# loop-guard field, so we must never block - fail open, not noisy.
-command -v jq >/dev/null 2>&1 || exit 0
+# loop-guard field, so we must never block - fail open. It is announced rather
+# than silent: this is the final turn-end backstop, and it fires once per turn,
+# so one stderr line is affordable and tells the operator the backstop is off.
+command -v jq >/dev/null 2>&1 || { fm_hook_warn_jq_missing turn-end; exit 0; }
 
 # A Cursor primary also loads the tracked Claude settings, and Cursor's own
 # registration owns its turn boundary through bin/fm-turnend-guard-cursor.sh,

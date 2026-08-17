@@ -49,7 +49,9 @@ function rawMentionsProtected(command) {
 
 function rawMentionsBroadKill(command) {
   const normalized = normalizeLineContinuations(command);
-  return /fm-watch/.test(normalized) && /\b(?:pkill|kill)\b/.test(normalized);
+  // `killall` needs its own alternative: `\bkill\b` cannot match inside it,
+  // because the trailing `all` makes the word boundary after `kill` fail.
+  return /fm-watch/.test(normalized) && /\b(?:pkill|killall|skill|kill|xargs)\b/.test(normalized);
 }
 
 function normalizeLineContinuations(source) {
@@ -601,10 +603,22 @@ const PROTECTED_SCRIPTS = [
   { relative: "bin/fm-watch.sh", kind: "watch" },
 ];
 
+// Identity is decided by NAME as well as by path shape. The three path forms
+// below all carry a literal `bin/` segment, so a command word that reaches the
+// same script without one - `./fm-watch.sh` evaluated with cwd already inside
+// bin/, which `(cd bin && ...)` produces and which the cd-guard's own
+// remediation text actively suggests - matched none of them and the node came
+// back unprotected, skipping every watcher rule at once.
+//
+// The basename test closes that without resolving the filesystem: no legitimate
+// unrelated executable is named fm-watch.sh, fm-watch-arm.sh, or
+// fm-watch-checkpoint.sh, so treating the bare name as protected costs nothing
+// and cannot be spelled around by a relative path.
 function protectedIdentity(value, root) {
   const normalized = path.normalize(value);
   for (const { relative, kind } of PROTECTED_SCRIPTS) {
     if (normalized === relative || normalized === path.join(root, relative) || normalized.endsWith(`/${relative}`)) return kind;
+    if (basename(normalized) === basename(relative)) return kind;
   }
   return "";
 }
@@ -726,6 +740,45 @@ function isWatcherPgrep(position, context) {
   return position.words.slice(position.index + 1).some((word) => /(?:^|\/)fm-watch(?:\.sh)?\b/.test(word.value) || wordReferencesAny(word, context.watcherPatterns));
 }
 
+// Process-signalling utilities, classified by how they choose their target.
+// PATTERN_SIGNALLERS select by name, so their own arguments say what dies and
+// can be judged directly. `kill` selects by PID, so it is judged by where those
+// PIDs came from instead. Matching on the class rather than on two literal
+// names is the point: `pkill` and `killall` differ only in spelling.
+const PATTERN_SIGNALLERS = new Set(["pkill", "killall", "skill"]);
+const SIGNALLERS = new Set(["pkill", "killall", "skill", "kill"]);
+
+function wordMentionsWatcher(word, context) {
+  return /fm-watch/.test(word.value) || wordReferencesAny(word, context.watcherPatterns);
+}
+
+// True when this node signals processes, either directly or by handing a
+// signaller to xargs. Any xargs argument that names a signaller counts: parsing
+// xargs' own option grammar to find the exact command word would be precise in
+// the wrong direction, since guessing wrong there means allowing a kill.
+function nodeSignalsProcesses(commandName, args) {
+  if (SIGNALLERS.has(commandName)) return true;
+  return commandName === "xargs" && args.some((word) => SIGNALLERS.has(basename(word.value)));
+}
+
+// A pipeline that locates the watcher in one stage and signals it in another
+// never puts the two in the same node: in `ps aux | grep fm-watch | awk '{print
+// $2}' | xargs kill -9` the PIDs arrive on stdin, so no node binds a watcher
+// PID the engine can follow and every per-node rule sees an innocent command.
+// Judge the pipeline as one unit instead - a stage that signals plus a stage
+// that names the watcher is a broad watcher kill, however the PIDs travel.
+function pipelineSignalsWatcher(nodeInfos, separators) {
+  let start = 0;
+  for (let i = 0; i < nodeInfos.length; i += 1) {
+    if (i < nodeInfos.length - 1 && (separators[i] === "|" || separators[i] === "|&")) continue;
+    const stages = nodeInfos.slice(start, i + 1);
+    start = i + 1;
+    if (stages.length < 2) continue;
+    if (stages.some((info) => info.signalsProcesses) && stages.some((info) => info.mentionsWatcher)) return true;
+  }
+  return false;
+}
+
 function analyzeProgram(command, context, depth = 0) {
   if (depth > 12) {
     return { error: "recursion limit", protectedFound: rawMentionsProtected(command), broadKill: rawMentionsBroadKill(command), pgrepWatcher: false, watcherPids: new Set() };
@@ -821,7 +874,7 @@ function analyzeProgram(command, context, depth = 0) {
     if (hasUnclassifiableProtectedExpansion(position.command, context.root)) unclassifiableProtected = true;
     const commandName = basename(executable);
     const args = position.words.slice(position.index + 1);
-    if (commandName === "pkill" && args.some((word) => /fm-watch/.test(word.value) || wordReferencesAny(word, nodeContext.watcherPatterns))) broadKill = true;
+    if (PATTERN_SIGNALLERS.has(commandName) && args.some((word) => wordMentionsWatcher(word, nodeContext))) broadKill = true;
     if (commandName === "kill" && (nodePgrepWatcher || args.some((word) => wordReferencesAny(word, nodeContext.watcherPids)))) broadKill = true;
     if (isWatcherPgrep(position, nodeContext)) pgrepWatcher = true;
     if (hasDynamicExecutionPayload(position, nodeContext) || wordReferencesAny(position.command, nodeContext.protectedVariables)) nodeNestedProtected = true;
@@ -841,8 +894,12 @@ function analyzeProgram(command, context, depth = 0) {
       nestedProtected: nodeNestedProtected,
       redirection: nodeHasRedirection(tokens),
       substitution: nodeHasUnsafeSubstitution(tokens),
+      signalsProcesses: nodeSignalsProcesses(commandName, args),
+      mentionsWatcher: position.words.some((word) => wordMentionsWatcher(word, nodeContext)),
     });
   }
+
+  broadKill ||= pipelineSignalsWatcher(nodeInfos, program.separators);
 
   const directProtected = nodeInfos.some((info) => Boolean(info.protectedKind));
   const protectedFound = directProtected || nestedProtected || unclassifiableProtected;

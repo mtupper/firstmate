@@ -20,6 +20,8 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-hook-host-lib.sh
+. "$SCRIPT_DIR/fm-hook-host-lib.sh"
 
 SOURCE=
 while [ $# -gt 0 ]; do
@@ -35,6 +37,8 @@ done
 
 DIGEST=$("$SCRIPT_DIR/fm-sessionstart-run.sh" --source "$SOURCE" </dev/null 2>/dev/null || true)
 [ -n "$DIGEST" ] || exit 0
-command -v jq >/dev/null 2>&1 || exit 0
+# Without jq the digest cannot be rendered as Cursor's JSON object, so the
+# session opens with no digest at all. Say so once rather than opening blind.
+command -v jq >/dev/null 2>&1 || { fm_hook_warn_jq_missing session-start; exit 0; }
 jq -n --arg c "$DIGEST" '{additional_context:$c}' 2>/dev/null || true
 exit 0

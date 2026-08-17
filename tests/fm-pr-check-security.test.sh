@@ -254,14 +254,30 @@ run_check_entry() {
     "$PR_CHECK" "$@"
 }
 
+# fm-pr-merge.sh refuses without a stated merge authority. This suite is about
+# path and URL safety rather than authority, so supply the captain's word by
+# default for calls that carry a task and a URL, and leave the arity-refusal
+# cases exactly as they were.
 run_merge_entry() {
   local dir=$1
   shift
+  local -a args=()
+  local has_authority=0 a
+  for a in "$@"; do
+    case "$a" in --authority|--authority=*) has_authority=1 ;; esac
+  done
+  if [ "$has_authority" -eq 0 ] && [ "$#" -ge 2 ]; then
+    args=("$1" "$2" --authority captain)
+    shift 2
+    args+=("$@")
+  else
+    args=("$@")
+  fi
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
     PATH="$dir/fakebin:$BASE_PATH" \
-    "$PR_MERGE" "$@"
+    "$PR_MERGE" "${args[@]+"${args[@]}"}"
 }
 
 # shellcheck disable=SC2016 # Literal rejected URL bytes are parser test data.
@@ -559,7 +575,8 @@ test_valid_recording_and_merge_derivation() {
   [ "$count" -eq 1 ] || fail "duplicate pr_head metadata was appended"
 
   : > "$dir/gh-axi.log"
-  run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \
+  run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 \
+    --authority captain -- --merge \
     >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
   grep -qxF 'pr merge 37 --repo my-org/repo_name.with-dots --merge' "$dir/gh-axi.log" \
     || fail "merge wrapper did not preserve repository derivation and method"
@@ -584,7 +601,7 @@ test_valid_recording_and_merge_derivation() {
 
   dir=$(make_case lifecycle-compatible-id)
   write_task_meta "$dir" Task_A.1
-  run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 \
+  run_merge_entry "$dir" Task_A.1 https://github.com/o/r/pull/3 --authority captain \
     > "$dir/stdout" 2> "$dir/stderr" \
     || fail "safe lifecycle-compatible task ID could not use the PR merge flow"
   fm_pr_poll_artifacts_valid "$dir/home/state" Task_A.1 "$POLL" \

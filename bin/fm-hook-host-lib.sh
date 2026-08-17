@@ -24,6 +24,20 @@
 # caller RUNS. A redundant run under Cursor wastes work; a skipped run under
 # Claude breaks the primary's supervision, which is the worse failure.
 
+# One-line notice that a stdin-transport guard is standing down because jq is
+# absent. The fail-open itself is correct - a guard that hard-failed would brick
+# every tool call - but a seatbelt that unbuckles without a sound is worse than
+# one that was never fitted, because the operator keeps trusting it.
+#
+# Only callers that fire once per turn or once per session emit this. The three
+# PreToolUse guards fire on every tool call, where a repeated warning would be
+# noise rather than signal; jq is in bin/fm-bootstrap.sh's COMMON_TOOLS so their
+# inert state is reported once per session as `MISSING: jq` instead.
+fm_hook_warn_jq_missing() {  # <guard-name>
+  printf 'WARNING: firstmate %s guard inert (jq not found); session start reports this as "MISSING: jq"\n' \
+    "${1:-hook}" >&2
+}
+
 # Return 0 when payload $1 was delivered by a foreign host whose own tracked
 # Firstmate registration already covers this event.
 fm_hook_payload_is_foreign_host() {  # <payload>

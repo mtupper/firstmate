@@ -51,6 +51,10 @@ matrix_case R04 allow "rg -n 'bin/fm-watch-arm.sh; echo bad' docs"
 matrix_case R05 allow "git grep 'fm-watch-checkpoint.sh && echo bad'"
 matrix_case R06 allow "sed -n '/fm-watch-checkpoint.sh/p' docs/arm-pretool-check.md"
 matrix_case R07 allow 'assert_contains "$content" '\''fm-watch-arm.sh &'\'''
+# R08-R09: signalling utilities are not themselves forbidden. Only a signaller
+# that reaches the watcher - by argument or through its own pipeline - denies.
+matrix_case R08 allow 'killall Dock'
+matrix_case R09 allow 'ls | xargs kill'
 matrix_case R08 allow "printf '%s\\n' 'bin/fm-watch-checkpoint.sh --seconds 180 >/tmp/out'"
 matrix_case R09 allow "tmux send-keys -t isolated-pi-lab 'bin/fm-watch-arm.sh &' Enter"
 matrix_case R10 allow "tmux send-keys -t isolated-pi-lab \"printf '%s\\n' 'bin/fm-watch-arm.sh &'\"; tmux send-keys -t isolated-pi-lab Enter"
@@ -118,6 +122,18 @@ matrix_case D51 deny '~/firstmate/bin/fm-watch.sh --restart'
 matrix_case D52 deny "bin/fm-\$'\x77'atch-arm.sh &"
 matrix_case D53 deny 'bin/fm-$"watch"-arm.sh &'
 matrix_case D54 deny 'bin/fm-watch-$"arm".sh &'
+# D55-D57: process-signalling utilities other than pkill, and PIDs that reach a
+# signaller through a pipe instead of through a variable the engine can bind.
+matrix_case D55 deny 'killall fm-watch.sh'
+matrix_case D56 deny 'ps aux | grep fm-watch | awk "{print \$2}" | xargs kill -9'
+matrix_case D57 deny "pgrep -f fm-watch.sh | xargs kill"
+# D58-D60: the same protected script reached without a literal bin/ path
+# segment, which is what a cwd already inside bin/ produces. The subshell
+# spelling matters: bin/fm-cd-command-policy.mjs denies the persistent
+# `cd bin && ...` form and its refusal text suggests exactly this shape.
+matrix_case D58 deny '(cd bin; ./fm-watch.sh)'
+matrix_case D59 deny '(cd bin && ./fm-watch-arm.sh &)'
+matrix_case D60 deny 'sh -c "cd bin && ./fm-watch-arm.sh &"'
 matrix_case D55 deny 'while true; do pkill -f fm-watch; done'
 matrix_case D56 deny 'for x in 1; do pkill -f fm-watch; done'
 matrix_case D57 deny 'case x in x) pkill -f fm-watch ;; esac'
