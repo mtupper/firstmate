@@ -143,6 +143,33 @@ worker_recover_quarantine() { # <account-home>
   rm -f -- "$WORKER_LOCK/quarantine"
 }
 
+# Every lock field is published as a mktemp temporary inside the lock
+# directory and then renamed over its final name, so an owner that dies between
+# those two steps - a SIGKILL, or the second TERM of a group stop arriving
+# after worker_shutdown has already disarmed its own trap - leaves one
+# .pid/.start/.command/.quarantine temporary behind. rmdir then fails on a
+# directory that is no longer empty, and it fails for every later worker too:
+# each one exits "cannot acquire or safely reclaim worker ownership", its
+# supervisor restarts it into the same wall, and the account keeps no worker at
+# all until someone deletes the file by hand. Clearing that debris is what
+# makes an unclean death recoverable, which is the whole point of the reclaim
+# path below.
+#
+# Only that path calls this, after the recorded owner is proven not to be a
+# live process and the lock is proven stale, so anything matching a
+# publication temporary can only be the dead owner's. A symlink or a directory
+# is not something a worker put there, so this refuses rather than removing it.
+worker_clear_lock_temporaries() {
+  local prefix entry
+  for prefix in pid start command quarantine; do
+    for entry in "$WORKER_LOCK/.$prefix."*; do
+      [ -e "$entry" ] || [ -L "$entry" ] || continue
+      [ -f "$entry" ] && [ ! -L "$entry" ] || return 1
+      rm -f -- "$entry" || return 1
+    done
+  done
+}
+
 worker_acquire_lock() {
   local account_home=$1 attempt=0
   while [ "$attempt" -lt 150 ]; do
@@ -164,6 +191,7 @@ worker_acquire_lock() {
     fi
     [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
     rm -f -- "$WORKER_LOCK/pid" "$WORKER_LOCK/start" "$WORKER_LOCK/command" || return 1
+    worker_clear_lock_temporaries || return 1
     rmdir "$WORKER_LOCK" || return 1
   done
   return 1

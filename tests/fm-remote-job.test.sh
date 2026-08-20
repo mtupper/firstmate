@@ -285,6 +285,32 @@ wait "$OTHER_PID" 2>/dev/null || true
 OTHER_PID=
 pass "stale ownership is reclaimed without signaling a reused pid"
 
+# An owner killed between mktemp and the rename that publishes a lock field
+# leaves that temporary in the lock directory. The observed shape is a
+# zero-byte .quarantine.XXXXXX from a worker that took a second TERM inside
+# worker_shutdown, after its own trap was disarmed. rmdir then refuses a
+# non-empty directory, so without the debris sweep every replacement worker
+# exits "cannot acquire or safely reclaim worker ownership" and the account is
+# stranded with no worker at all.
+fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" \
+  || fail "the debris fixture could not stop the running worker"
+rm -f "$STATE_ROOT/worker.pid" "$STATE_ROOT/worker.ready" "$STATE_ROOT/worker.identity"
+(umask 077; mkdir -p "$STATE_ROOT/worker.lock")
+rm -f "$STATE_ROOT/worker.lock/pid" "$STATE_ROOT/worker.lock/start" "$STATE_ROOT/worker.lock/command"
+LOCK_DEBRIS="$STATE_ROOT/worker.lock/.quarantine.SqUa7C"
+: > "$LOCK_DEBRIS"
+touch -t 200001010000 "$STATE_ROOT/worker.lock"
+fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+assert_absent "$LOCK_DEBRIS" "reclaiming a stale lock left the dead owner's publication debris"
+fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$ACCOUNT_HOME" \
+  || fail "debris recovery did not start the current worker"
+fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-probe-job.sh < /dev/null > /dev/null
+JOB_ID=$FM_REMOTE_JOB_ID
+fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
+[ "$FM_REMOTE_JOB_EXIT" -eq 0 ] || fail "the worker recovered from debris did not serve a job"
+fm_remote_job_reap "$ACCOUNT_HOME" "$JOB_ID" || fail "the debris recovery probe could not be reaped"
+pass "an unclean owner's publication debris cannot strand the ownership lock"
+
 FM_REMOTE_JOB_TIMEOUT=1
 fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-timeout-job.sh < /dev/null > /dev/null
 JOB_ID=$FM_REMOTE_JOB_ID
