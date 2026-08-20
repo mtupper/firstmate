@@ -1,0 +1,22 @@
+
+=== 1. the claim a home writes when it is entered through the alias ===
+BEFORE the fix, claim owner: $TMP/captain/dev-github/firstmate
+  -> the alias spelling, in a claim root every home shares.
+
+=== 2. can the same home, entered physically, still find that claim? ===
+pre-fix read (plain string compare), `retire` from $TMP/captain/dgh/firstmate:
+retired: demo-source
+  claim left behind:          yes
+  runner still alive:         yes  <- ORPHANED: registration gone, process still running
+
+=== 3. the change as committed ===
+a claim left on disk by the old code still holds the alias: $TMP/captain/dev-github/firstmate
+fixed read side, `retire` from the physical home:
+retired: demo-source
+  claim left behind:          no   <- recognized as its own and released
+  runner still alive:         no   <- stopped with its claim
+
+=== 4. and a home entered through the alias now records itself physically ===
+AFTER the fix, claim owner:  $TMP/captain/dgh/firstmate
+  -> the physical path, whichever spelling firstmate was entered through.
+

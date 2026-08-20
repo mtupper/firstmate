@@ -1,0 +1,27 @@
+Fail-first proof for tests/fm-path-spelling.test.sh
+Each run reverts ONE write site to its pre-fix form, runs the test, then restores.
+
+########## A) bin/fm-spawn.sh:1645  `pwd -P` -> `pwd`  (the reported defect) ##########
+  PROJ_ABS="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)"
+not ok - meta did not record the resolved project path
+FM_TEST_SUMMARY total=1 failed=1 skipped_gate=0 duration_ms=2824
+
+########## B) bin/fm-watch.sh  .watch.lock writes un-canonicalized ##########
+printf '%s\n' "$FM_HOME" > "$WATCH_LOCK/fm-home" || true
+printf '%s\n' "$WATCH_PATH" > "$WATCH_LOCK/watcher-path" || true
+ok - an aliased firstmate home does not leak into the recorded project path
+ok - an aliased project argument is recorded as its resolved physical path
+ok - an aliased relative project argument is recorded as its resolved physical path
+not ok - watch lock did not record the resolved watcher path: /private/var/folders/jb/73m8mg3s5zq_5dzq37yy434m0000gp/T/fm-path-spelling.aEgmOL/watchlock/aliasroot/bin/fm-watch.sh
+FM_TEST_SUMMARY total=1 failed=1 skipped_gate=0 duration_ms=8135
+
+########## C) the change as committed ##########
+ok - an aliased firstmate home does not leak into the recorded project path
+ok - an aliased project argument is recorded as its resolved physical path
+ok - an aliased relative project argument is recorded as its resolved physical path
+ok - a watcher armed through an aliased checkout records its resolved path
+ok - a record holding the old aliased spelling still matches the live home
+ok - a file path canonicalizes and compares like a directory path
+ok - spelling tolerance does not collapse genuinely different paths
+ok - a lock holding the old aliased watcher path still matches the live watcher
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=8260

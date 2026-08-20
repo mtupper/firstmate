@@ -1,0 +1,14 @@
+FM_TEST_BEGIN 2026-08-20T07:50:53Z tests/fm-path-spelling.test.sh family=unclassified expected_gate_skip=none
+ok - an aliased firstmate home does not leak into the recorded project path
+ok - an aliased project argument is recorded as its resolved physical path
+ok - an aliased relative project argument is recorded as its resolved physical path
+ok - a watcher armed through an aliased checkout records its resolved path
+ok - a record holding the old aliased spelling still matches the live home
+ok - a file path canonicalizes and compares like a directory path
+ok - spelling tolerance does not collapse genuinely different paths
+ok - a lock holding the old aliased watcher path still matches the live watcher
+# all fm-path-spelling tests passed
+FM_TEST_END 2026-08-20T07:51:02Z tests/fm-path-spelling.test.sh exit=0 duration_ms=8811 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=8864
+FM_TEST_SUMMARY_FAMILY family=unclassified count=1 duration_ms=8811 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-path-spelling.test.sh duration_ms=8811

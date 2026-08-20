@@ -1,0 +1,37 @@
+
+=== the captain's home shape ===
+total 0
+lrwxr-xr-x@ 1 mtupper  staff   3 Aug 20 00:50 dev-github -> dgh
+drwxr-xr-x@ 3 mtupper  staff  96 Aug 20 00:50 dgh
+
+firstmate is entered through the ALIAS spelling:
+  FM_HOME=$TMP/captain/dev-github/firstmate
+  spawn argument: projects/demo
+
+=== BEFORE the fix (bin/fm-spawn.sh line 1645 reverted to a logical `pwd`) ===
+durable record state/evidence-before.meta:
+worktree=$TMP/wt
+project=$TMP/captain/dev-github/firstmate/projects/demo
+
+  -> project= holds the ALIAS spelling "dev-github". This is the defect:
+     a session entered through dgh/ writes and reads a different string
+     for the same directory, so the two cannot see each other.
+
+=== AFTER the fix (bin/fm-spawn.sh as committed) ===
+durable record state/evidence-after.meta:
+worktree=$TMP/wt
+project=$TMP/captain/dgh/firstmate/projects/demo
+
+  -> project= holds the resolved physical path "dgh". One directory,
+     one spelling, whichever way firstmate was entered.
+
+=== acceptance criterion 3: the old alias record is still readable ===
+record written before the change:  $TMP/captain/dev-github/firstmate/projects/demo
+live physical spelling:            $TMP/captain/dgh/firstmate/projects/demo
+the alias record still names a real directory:      yes
+fm_same_path(old record, live path):                match
+two genuinely different real directories stay distinct:  confirmed
+
+  -> a fleet already running under the old spelling keeps matching;
+     nothing on disk needed rewriting.
+
