@@ -494,7 +494,7 @@ cmd_reconcile() {
     pid=$FM_PROCEVENT_CLAIM_PID
     token=$FM_PROCEVENT_CLAIM_TOKEN
     identity=$FM_PROCEVENT_CLAIM_IDENTITY
-    if ! fm_same_path "$owner" "$FM_HOME"; then
+    if ! fm_same_path "$owner" "$FM_HOME_CANON"; then
       fm_procevent_source_lock_release "$id"
       continue
     fi
@@ -533,7 +533,7 @@ cmd_reconcile() {
           owner=$FM_PROCEVENT_CLAIM_HOME
           pid=$FM_PROCEVENT_CLAIM_PID
           token=$FM_PROCEVENT_CLAIM_TOKEN
-          if fm_same_path "$owner" "$FM_HOME" \
+          if fm_same_path "$owner" "$FM_HOME_CANON" \
             && rm -f -- "$(source_file "$id")" \
             && [ ! -e "$(source_file "$id")" ] \
             && [ ! -L "$(source_file "$id")" ] \
@@ -553,7 +553,7 @@ cmd_reconcile() {
           token=$FM_PROCEVENT_CLAIM_TOKEN
           identity=$FM_PROCEVENT_CLAIM_IDENTITY
           stop_state=2
-          if fm_same_path "$owner" "$FM_HOME"; then
+          if fm_same_path "$owner" "$FM_HOME_CANON"; then
             stop_runner_pid "$pid" "$identity"
             stop_state=$?
           fi
@@ -652,7 +652,7 @@ cmd_retire() {
       fm_procevent_source_lock_release "$id"
       die "cannot safely read source ownership: $id"
     fi
-    if fm_same_path "$FM_PROCEVENT_CLAIM_HOME" "$FM_HOME"; then
+    if fm_same_path "$FM_PROCEVENT_CLAIM_HOME" "$FM_HOME_CANON"; then
       owner=$FM_PROCEVENT_CLAIM_HOME
       pid=$FM_PROCEVENT_CLAIM_PID
       token=$FM_PROCEVENT_CLAIM_TOKEN
@@ -694,7 +694,7 @@ sweep_relevant_state() {
   for path in "$(fm_procevent_claim_root)"/*.claim; do
     [ -f "$path" ] && [ ! -L "$path" ] || continue
     IFS= read -r owner < "$path" 2>/dev/null || continue
-    fm_same_path "$owner" "$FM_HOME" && return 0
+    fm_same_path "$owner" "$FM_HOME_CANON" && return 0
   done
   return 1
 }
@@ -707,7 +707,7 @@ sweep_source_preflight() {
       fm_procevent_source_lock_release "$id"
       return 1
     fi
-    if fm_same_path "$FM_PROCEVENT_CLAIM_HOME" "$FM_HOME"; then
+    if fm_same_path "$FM_PROCEVENT_CLAIM_HOME" "$FM_HOME_CANON"; then
       fm_procevent_pid_state "$FM_PROCEVENT_CLAIM_PID" "$FM_PROCEVENT_CLAIM_IDENTITY"
       state=$?
       if [ "$state" -eq 2 ]; then
@@ -736,7 +736,7 @@ cmd_sweep_home() {
   for path in "$(fm_procevent_claim_root)"/*.claim; do
     [ -f "$path" ] && [ ! -L "$path" ] || continue
     IFS= read -r owner < "$path" 2>/dev/null || continue
-    fm_same_path "$owner" "$FM_HOME" || continue
+    fm_same_path "$owner" "$FM_HOME_CANON" || continue
     id=${path##*/}; id=${id%.claim}
     if fm_procevent_source_id_valid "$id"; then
       sweep_add_id "$id"
