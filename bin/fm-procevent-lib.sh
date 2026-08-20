@@ -223,7 +223,7 @@ fm_procevent_claim_acquire_locked() {
           old_token=$FM_PROCEVENT_CLAIM_TOKEN
           old_reg_dir=$FM_PROCEVENT_CLAIM_REG_DIR
           if [ -z "$old_reg_dir" ]; then
-            if [ "$old_home" = "$home" ]; then
+            if fm_same_path "$old_home" "$home"; then
               old_reg_dir=$reg_dir
             else
               old_reg_dir="$old_home/state/procevent"

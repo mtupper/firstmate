@@ -781,7 +781,10 @@ trap 'exit 1' HUP INT TERM
 # ${BASHPID:-$$} from this same main shell). Read directly, never via a command
 # substitution, so it matches the stored holder pid for the self-eviction check.
 WATCHER_PID=${BASHPID:-$$}
-printf '%s\n' "$FM_HOME" > "$WATCH_LOCK/fm-home" || true
+# Canonical, because fm_watcher_lock_matches_pid keys the "is this watcher
+# mine?" decision on this value: a home recorded under a symlink alias would
+# make the guard disown its own live watcher and arm a second cycle.
+printf '%s\n' "$(fm_canonical_dir "$FM_HOME")" > "$WATCH_LOCK/fm-home" || true
 printf '%s\n' "$WATCH_PATH" > "$WATCH_LOCK/watcher-path" || true
 # shellcheck disable=SC2034 # Consumed by wake() in the separately linted transition owner.
 FM_WATCH_DELIVERY_PID=$WATCHER_PID

@@ -99,7 +99,7 @@ fm_watcher_lock_matches_pid() {
   lock_home=$(cat "$lockdir/fm-home" 2>/dev/null || true)
   lock_path=$(cat "$lockdir/watcher-path" 2>/dev/null || true)
   lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
-  [ "$lock_home" = "$home" ] || return 1
+  fm_same_path "$lock_home" "$home" || return 1
   [ "$lock_path" = "$watch_path" ] || return 1
   [ -n "$lock_identity" ] || return 1
   current_identity=$(fm_pid_identity "$pid") || return 1
@@ -320,6 +320,41 @@ fm_lock_abs_path() {
   base=$(basename "$path")
   dir=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
   printf '%s/%s\n' "$dir" "$base"
+}
+
+# fm_canonical_dir <path>: the physical spelling of an existing directory, or
+# the path unchanged when it cannot be resolved.
+#
+# A directory reachable through a symlink has two valid spellings, and a shell
+# entered through the symlink keeps that spelling in $PWD - so a logical `pwd`
+# hands back the alias. Keying a durable record on the alias splits one
+# directory into two records that cannot see each other. Every path firstmate
+# writes into a durable record goes through this first, so a record always
+# names the directory the same way.
+#
+# Unresolvable input is returned as given rather than refused: canonicalization
+# exists to keep records consistent, never to add a new failure path to a
+# caller that was happy with the literal string.
+fm_canonical_dir() {
+  local path=${1-} resolved
+  [ -n "$path" ] || return 0
+  resolved=$(CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) || resolved=$path
+  printf '%s\n' "$resolved"
+}
+
+# fm_same_path <a> <b>: true when both name the same directory.
+#
+# The read-side counterpart to fm_canonical_dir. Records written before
+# canonicalization still carry an alias spelling, so comparing a stored path
+# against a live one must resolve BOTH sides; comparing the raw strings would
+# make a home stop recognizing its own already-recorded lock or claim and
+# strand the work behind it. Falls back to string equality when either side
+# cannot be resolved, which is exactly the pre-existing behavior.
+fm_same_path() {
+  local a=${1-} b=${2-}
+  [ "$a" = "$b" ] && return 0
+  [ -n "$a" ] && [ -n "$b" ] || return 1
+  [ "$(fm_canonical_dir "$a")" = "$(fm_canonical_dir "$b")" ]
 }
 
 fm_lock_owner_dir() {
