@@ -34,7 +34,9 @@ X_LINK="$ROOT/bin/fm-x-link.sh"
 # so recreate the root before resolving it and clean it up from this file's trap.
 TMP_ROOT=$(fm_test_tmproot fm-control-relaunch)
 mkdir -p "$TMP_ROOT"
-TMP_ROOT=$(cd "$TMP_ROOT" && pwd)
+# Physical spelling: a relaunch rewrites project= canonically, so a fixture root
+# under a symlinked TMPDIR must be spelled the same way to compare equal.
+TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
 TASK_TMPS=()
 
 relaunch_cleanup() {

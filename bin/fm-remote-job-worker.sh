@@ -143,6 +143,34 @@ worker_recover_quarantine() { # <account-home>
   rm -f -- "$WORKER_LOCK/quarantine"
 }
 
+# Every lock field is published as a mktemp temporary inside the lock
+# directory and then renamed over its final name, so an owner that dies between
+# those two steps leaves one .pid/.start/.command/.quarantine temporary behind.
+# worker_shutdown ignores the stop signals rather than restoring their fatal
+# default, so an ordinary repeated stop can no longer do that; what remains is
+# the SIGKILL a stop escalates to when a worker outlives its TERM grace, which
+# no handler can guard. rmdir then fails on a directory that is no longer
+# empty, and it fails for every later worker too: each one exits "cannot
+# acquire or safely reclaim worker ownership", its supervisor restarts it into
+# the same wall, and the account keeps no worker at all until someone deletes
+# the file by hand. Clearing that debris is what makes an unclean death
+# recoverable, which is the whole point of the reclaim path below.
+#
+# Only that path calls this, after the recorded owner is proven not to be a
+# live process and the lock is proven stale, so anything matching a
+# publication temporary can only be the dead owner's. A symlink or a directory
+# is not something a worker put there, so this refuses rather than removing it.
+worker_clear_lock_temporaries() {
+  local prefix entry
+  for prefix in pid start command quarantine; do
+    for entry in "$WORKER_LOCK/.$prefix."*; do
+      [ -e "$entry" ] || [ -L "$entry" ] || continue
+      [ -f "$entry" ] && [ ! -L "$entry" ] || return 1
+      rm -f -- "$entry" || return 1
+    done
+  done
+}
+
 worker_acquire_lock() {
   local account_home=$1 attempt=0
   while [ "$attempt" -lt 150 ]; do
@@ -164,6 +192,7 @@ worker_acquire_lock() {
     fi
     [ ! -L "$WORKER_LOCK/pid" ] && [ ! -L "$WORKER_LOCK/start" ] && [ ! -L "$WORKER_LOCK/command" ] || return 1
     rm -f -- "$WORKER_LOCK/pid" "$WORKER_LOCK/start" "$WORKER_LOCK/command" || return 1
+    worker_clear_lock_temporaries || return 1
     rmdir "$WORKER_LOCK" || return 1
   done
   return 1
@@ -291,8 +320,19 @@ worker_stop_active_execution() {
   WORKER_ACTIVE_JOB=
 }
 
+# Shutdown ignores the stop signals rather than restoring their default, and
+# that distinction is load-bearing. A stop reaches this worker as a signal to
+# its whole isolated process group, so the restart supervisor above it takes the
+# same stop and its own handler then sends a second TERM to this child. `trap -`
+# restores the fatal default for the rest of this sequence, so that second
+# signal kills the worker between the mktemp and the rename that publishes a
+# lock field: the ownership lock is left non-empty, every replacement worker's
+# rmdir refuses it, and the account keeps no worker at all. Ignoring the signal
+# still prevents re-entering this handler and cannot kill the sequence. No job
+# command is launched after this point, so an ignored disposition never reaches
+# one, and a stop that escalates to SIGKILL is still honored.
 worker_shutdown() {
-  trap - HUP INT TERM
+  trap '' HUP INT TERM
   worker_publish_quarantine || {
     worker_error "cannot guard worker ownership for shutdown"
     trap worker_shutdown HUP INT TERM
@@ -723,9 +763,13 @@ worker_supervisor_cleanup_dead_child() { # <account-home> <pid>
   rmdir "$lock"
 }
 
+# Ignores rather than defaults for the same reason worker_shutdown does: a group
+# stop signals this supervisor too, and a repeated stop must not kill it while it
+# is waiting for the serving child to release ownership, which would leave that
+# child running with no supervisor.
 worker_supervisor_shutdown() {
   local pid=${WORKER_SUPERVISED_PID:-}
-  trap - HUP INT TERM
+  trap '' HUP INT TERM
   if [ -n "$pid" ]; then
     kill -TERM "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true

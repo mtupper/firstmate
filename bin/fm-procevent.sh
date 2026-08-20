@@ -99,6 +99,13 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-procevent-lib.sh
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
+# The claim root is machine-global (fm_procevent_claim_root), so a claim's home
+# field is what tells one home's sources apart from another's. Resolve it once:
+# a home recorded under a symlink alias would stop matching its own claims and
+# leave its runners orphaned. Comparisons against already-recorded claims still
+# go through fm_same_path, which resolves both sides.
+FM_HOME_CANON=$(fm_canonical_path "$FM_HOME")
+
 REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
@@ -292,7 +299,7 @@ cmd_start() {
     fm_procevent_source_lock_release "$id"
     die "registration argv is unreadable: $id"
   fi
-  fm_procevent_claim_acquire_locked "$id" "$FM_HOME" "$$" "$(source_file "$id")"
+  fm_procevent_claim_acquire_locked "$id" "$FM_HOME_CANON" "$$" "$(source_file "$id")"
   claimed=$?
   fm_procevent_source_lock_release "$id"
   case "$claimed" in
@@ -301,7 +308,7 @@ cmd_start() {
     *) die "cannot claim source: $id" ;;
   esac
   CLAIM_ID=$id
-  CLAIM_HOME=$FM_HOME
+  CLAIM_HOME=$FM_HOME_CANON
   CLAIM_PID=$$
   CLAIM_TOKEN=$FM_PROCEVENT_CLAIM_TOKEN
   CLAIM_REG_IDENTITY=$FM_PROCEVENT_CLAIM_REG_IDENTITY
@@ -487,7 +494,7 @@ cmd_reconcile() {
     pid=$FM_PROCEVENT_CLAIM_PID
     token=$FM_PROCEVENT_CLAIM_TOKEN
     identity=$FM_PROCEVENT_CLAIM_IDENTITY
-    if [ "$owner" != "$FM_HOME" ]; then
+    if ! fm_same_path "$owner" "$FM_HOME_CANON"; then
       fm_procevent_source_lock_release "$id"
       continue
     fi
@@ -526,7 +533,7 @@ cmd_reconcile() {
           owner=$FM_PROCEVENT_CLAIM_HOME
           pid=$FM_PROCEVENT_CLAIM_PID
           token=$FM_PROCEVENT_CLAIM_TOKEN
-          if [ "$owner" = "$FM_HOME" ] \
+          if fm_same_path "$owner" "$FM_HOME_CANON" \
             && rm -f -- "$(source_file "$id")" \
             && [ ! -e "$(source_file "$id")" ] \
             && [ ! -L "$(source_file "$id")" ] \
@@ -546,7 +553,7 @@ cmd_reconcile() {
           token=$FM_PROCEVENT_CLAIM_TOKEN
           identity=$FM_PROCEVENT_CLAIM_IDENTITY
           stop_state=2
-          if [ "$owner" = "$FM_HOME" ]; then
+          if fm_same_path "$owner" "$FM_HOME_CANON"; then
             stop_runner_pid "$pid" "$identity"
             stop_state=$?
           fi
@@ -645,7 +652,7 @@ cmd_retire() {
       fm_procevent_source_lock_release "$id"
       die "cannot safely read source ownership: $id"
     fi
-    if [ "$FM_PROCEVENT_CLAIM_HOME" = "$FM_HOME" ]; then
+    if fm_same_path "$FM_PROCEVENT_CLAIM_HOME" "$FM_HOME_CANON"; then
       owner=$FM_PROCEVENT_CLAIM_HOME
       pid=$FM_PROCEVENT_CLAIM_PID
       token=$FM_PROCEVENT_CLAIM_TOKEN
@@ -687,7 +694,7 @@ sweep_relevant_state() {
   for path in "$(fm_procevent_claim_root)"/*.claim; do
     [ -f "$path" ] && [ ! -L "$path" ] || continue
     IFS= read -r owner < "$path" 2>/dev/null || continue
-    [ "$owner" = "$FM_HOME" ] && return 0
+    fm_same_path "$owner" "$FM_HOME_CANON" && return 0
   done
   return 1
 }
@@ -700,7 +707,7 @@ sweep_source_preflight() {
       fm_procevent_source_lock_release "$id"
       return 1
     fi
-    if [ "$FM_PROCEVENT_CLAIM_HOME" = "$FM_HOME" ]; then
+    if fm_same_path "$FM_PROCEVENT_CLAIM_HOME" "$FM_HOME_CANON"; then
       fm_procevent_pid_state "$FM_PROCEVENT_CLAIM_PID" "$FM_PROCEVENT_CLAIM_IDENTITY"
       state=$?
       if [ "$state" -eq 2 ]; then
@@ -729,7 +736,7 @@ cmd_sweep_home() {
   for path in "$(fm_procevent_claim_root)"/*.claim; do
     [ -f "$path" ] && [ ! -L "$path" ] || continue
     IFS= read -r owner < "$path" 2>/dev/null || continue
-    [ "$owner" = "$FM_HOME" ] || continue
+    fm_same_path "$owner" "$FM_HOME_CANON" || continue
     id=${path##*/}; id=${id%.claim}
     if fm_procevent_source_id_valid "$id"; then
       sweep_add_id "$id"

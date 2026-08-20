@@ -18,6 +18,10 @@ set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP_ROOT=$(fm_test_tmproot fm-procevent-tests)
+# Physical spelling: a claim records its owning home canonically, so fixture
+# homes built under a symlinked TMPDIR (macOS /var -> /private/var) must be
+# spelled the same way for an ownership assertion to mean what it says.
+TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
 export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/claims"
 
 BLOCKER="$TMP_ROOT/blocker.sh"

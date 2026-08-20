@@ -285,6 +285,79 @@ wait "$OTHER_PID" 2>/dev/null || true
 OTHER_PID=
 pass "stale ownership is reclaimed without signaling a reused pid"
 
+# An owner killed between mktemp and the rename that publishes a lock field
+# leaves that temporary in the lock directory. The observed shape is a
+# zero-byte .quarantine.XXXXXX from a worker that died inside worker_shutdown.
+# rmdir then refuses a non-empty directory, so without the debris sweep every
+# replacement worker exits "cannot acquire or safely reclaim worker ownership"
+# and the account is stranded with no worker at all.
+fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" \
+  || fail "the debris fixture could not stop the running worker"
+rm -f "$STATE_ROOT/worker.pid" "$STATE_ROOT/worker.ready" "$STATE_ROOT/worker.identity"
+(umask 077; mkdir -p "$STATE_ROOT/worker.lock")
+rm -f "$STATE_ROOT/worker.lock/pid" "$STATE_ROOT/worker.lock/start" "$STATE_ROOT/worker.lock/command"
+LOCK_DEBRIS="$STATE_ROOT/worker.lock/.quarantine.SqUa7C"
+: > "$LOCK_DEBRIS"
+touch -t 200001010000 "$STATE_ROOT/worker.lock"
+fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+assert_absent "$LOCK_DEBRIS" "reclaiming a stale lock left the dead owner's publication debris"
+fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$ACCOUNT_HOME" \
+  || fail "debris recovery did not start the current worker"
+fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-probe-job.sh < /dev/null > /dev/null
+JOB_ID=$FM_REMOTE_JOB_ID
+fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
+[ "$FM_REMOTE_JOB_EXIT" -eq 0 ] || fail "the worker recovered from debris did not serve a job"
+fm_remote_job_reap "$ACCOUNT_HOME" "$JOB_ID" || fail "the debris recovery probe could not be reaped"
+pass "an unclean owner's publication debris cannot strand the ownership lock"
+
+# A stop reaches a worker as a signal to its whole isolated process group, so the
+# restart supervisor takes the same signal and its own handler then sends a second
+# TERM to the serving child - which is by then inside worker_shutdown, publishing
+# durable lock state through mktemp-then-rename. Whether that second signal lands
+# before or inside the shutdown window is left to the kernel's process-group
+# delivery order, so the reproduction below makes it deterministic instead: it
+# signals once, waits until the worker's quarantine publication proves it is past
+# its trap disarm, and only then signals again. A window that restored the fatal
+# default disposition dies there, leaving pid/start/command and a publication
+# temporary in the ownership lock; every later worker's rmdir then refuses that
+# directory and the account keeps no worker at all, which is what a caller sees as
+# "remote job worker did not report ready after startup".
+SIGNAL_WINDOW_PID=$(cat "$STATE_ROOT/worker.pid")
+SIGNAL_WINDOW_LOCK="$STATE_ROOT/worker.lock"
+SIGNAL_WINDOW_PGID=$(fm_remote_job_worker_process_group "$SIGNAL_WINDOW_PID") \
+  || fail "the shutdown-window fixture has no isolated worker process group"
+kill -TERM "$SIGNAL_WINDOW_PID" || fail "the shutdown-window fixture could not signal the worker"
+SIGNAL_WINDOW_OPEN=0
+SIGNAL_WINDOW_SPIN=0
+while [ "$SIGNAL_WINDOW_SPIN" -lt 4000000 ]; do
+  for signal_window_file in "$SIGNAL_WINDOW_LOCK"/.quarantine.* "$SIGNAL_WINDOW_LOCK/quarantine"; do
+    [ -e "$signal_window_file" ] || continue
+    SIGNAL_WINDOW_OPEN=1
+    break
+  done
+  [ "$SIGNAL_WINDOW_OPEN" -eq 1 ] && break
+  kill -0 "$SIGNAL_WINDOW_PID" 2>/dev/null || break
+  SIGNAL_WINDOW_SPIN=$((SIGNAL_WINDOW_SPIN + 1))
+done
+[ "$SIGNAL_WINDOW_OPEN" -eq 1 ] \
+  || fail "the worker never published the quarantine that proves it entered its shutdown window"
+SIGNAL_WINDOW_SPIN=0
+while [ "$SIGNAL_WINDOW_SPIN" -lt 200000 ] && kill -TERM "$SIGNAL_WINDOW_PID" 2>/dev/null; do
+  SIGNAL_WINDOW_SPIN=$((SIGNAL_WINDOW_SPIN + 1))
+done
+kill -0 "$SIGNAL_WINDOW_PID" 2>/dev/null \
+  && fail "the worker outlived a bounded stop inside its shutdown window"
+for _ in $(seq 1 100); do
+  kill -0 -- "-$SIGNAL_WINDOW_PGID" 2>/dev/null || break
+  sleep 0.05
+done
+assert_absent "$SIGNAL_WINDOW_LOCK" \
+  "a repeated stop signal during shutdown stranded the worker ownership lock"
+fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" || fail "$FM_REMOTE_JOB_ERROR"
+fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$ACCOUNT_HOME" \
+  || fail "no replacement worker could take ownership after a stop during shutdown"
+pass "a repeated stop signal inside the shutdown window cannot strand ownership"
+
 FM_REMOTE_JOB_TIMEOUT=1
 fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" fm-timeout-job.sh < /dev/null > /dev/null
 JOB_ID=$FM_REMOTE_JOB_ID
