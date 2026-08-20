@@ -100,7 +100,7 @@ fm_watcher_lock_matches_pid() {
   lock_path=$(cat "$lockdir/watcher-path" 2>/dev/null || true)
   lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
   fm_same_path "$lock_home" "$home" || return 1
-  [ "$lock_path" = "$watch_path" ] || return 1
+  fm_same_path "$lock_path" "$watch_path" || return 1
   [ -n "$lock_identity" ] || return 1
   current_identity=$(fm_pid_identity "$pid") || return 1
   [ "$current_identity" = "$lock_identity" ] || return 1
@@ -314,47 +314,63 @@ fm_lock_role() {
   cat "$1/role" 2>/dev/null
 }
 
+# fm_lock_abs_path <path>: <path> with its PARENT resolved to its physical
+# spelling and the final component appended unchanged. Fails when the parent
+# cannot be entered. This is the form that works for a path whose own last
+# component is not an enterable directory - a file, a socket, a lock that does
+# not exist yet - and it is the shape fm_canonical_path falls back to.
 fm_lock_abs_path() {
   local path=$1 dir base
   dir=$(dirname "$path")
   base=$(basename "$path")
-  dir=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
-  printf '%s/%s\n' "$dir" "$base"
+  dir=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P) || return 1
+  printf '%s/%s\n' "${dir%/}" "$base"
 }
 
-# fm_canonical_dir <path>: the physical spelling of an existing directory, or
-# the path unchanged when it cannot be resolved.
+# fm_canonical_path <path>: the physical spelling of <path>, or the path
+# unchanged when nothing about it can be resolved.
 #
 # A directory reachable through a symlink has two valid spellings, and a shell
 # entered through the symlink keeps that spelling in $PWD - so a logical `pwd`
-# hands back the alias. Keying a durable record on the alias splits one
-# directory into two records that cannot see each other. Every path firstmate
-# writes into a durable record goes through this first, so a record always
-# names the directory the same way.
+# hands back the alias. Keying a durable record on the alias splits one path
+# into two records that cannot see each other. Every path firstmate writes into
+# a durable record goes through this first, so a record always names the same
+# path the same way.
+#
+# Both shapes resolve through one helper, because a durable record holds both:
+# a directory resolves by entering it, and anything else (a file such as the
+# watcher lock's watcher-path, or a path that does not exist yet) resolves its
+# parent and keeps its own final component. A caller therefore never has to
+# know which shape it holds, and a file path can no longer pass through
+# silently unresolved.
 #
 # Unresolvable input is returned as given rather than refused: canonicalization
 # exists to keep records consistent, never to add a new failure path to a
 # caller that was happy with the literal string.
-fm_canonical_dir() {
+fm_canonical_path() {
   local path=${1-} resolved
   [ -n "$path" ] || return 0
-  resolved=$(CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) || resolved=$path
+  resolved=$(CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) \
+    || resolved=$(fm_lock_abs_path "$path") \
+    || resolved=$path
   printf '%s\n' "$resolved"
 }
 
-# fm_same_path <a> <b>: true when both name the same directory.
+# fm_same_path <a> <b>: true when both name the same path.
 #
-# The read-side counterpart to fm_canonical_dir. Records written before
+# The read-side counterpart to fm_canonical_path. Records written before
 # canonicalization still carry an alias spelling, so comparing a stored path
 # against a live one must resolve BOTH sides; comparing the raw strings would
 # make a home stop recognizing its own already-recorded lock or claim and
 # strand the work behind it. Falls back to string equality when either side
-# cannot be resolved, which is exactly the pre-existing behavior.
+# cannot be resolved, which is exactly the pre-existing behavior. Two paths
+# that resolve to different physical spellings stay different: tolerance is
+# about one path with two spellings, never about treating two paths as one.
 fm_same_path() {
   local a=${1-} b=${2-}
   [ "$a" = "$b" ] && return 0
   [ -n "$a" ] && [ -n "$b" ] || return 1
-  [ "$(fm_canonical_dir "$a")" = "$(fm_canonical_dir "$b")" ]
+  [ "$(fm_canonical_path "$a")" = "$(fm_canonical_path "$b")" ]
 }
 
 fm_lock_owner_dir() {

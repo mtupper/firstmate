@@ -1773,7 +1773,11 @@ firstmate_home_has_process_events() {
   for path in "$claim_root"/*.claim; do
     [ -f "$path" ] && [ ! -L "$path" ] || continue
     IFS= read -r owner < "$path" 2>/dev/null || continue
-    [ "$owner" = "$home" ] && return 0
+    # Tolerant, like every other claim-owner compare (bin/fm-procevent.sh): a
+    # claim written before canonicalization holds the alias spelling while
+    # <home> here is already resolved, and missing it would delete the home
+    # without snapshotting or cleaning up its live claims.
+    fm_same_path "$owner" "$home" && return 0
   done
   return 1
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Regression test for symlinked path aliases leaking into durable task records
-# (bin/fm-spawn.sh's project= / home= writes into state/<id>.meta).
+# Regression test for symlinked path aliases leaking into durable records
+# (bin/fm-spawn.sh's project= / home= writes into state/<id>.meta, and
+# bin/fm-watch.sh's fm-home / watcher-path writes into state/.watch.lock).
 #
 # A directory reachable under two spellings - its real path and a symlink alias
 # pointing at it - is one directory, but a record keyed on the literal string is
@@ -150,8 +151,8 @@ same_path() {  # <a> <b>: exit status of fm_same_path
   bash -c '. "$1"; fm_same_path "$2" "$3"' _ "$LIB" "$1" "$2"
 }
 
-canonical_dir() {  # <path>
-  bash -c '. "$1"; fm_canonical_dir "$2"' _ "$LIB" "$1"
+canonical_path() {  # <path>
+  bash -c '. "$1"; fm_canonical_path "$2"' _ "$LIB" "$1"
 }
 
 test_recorded_alias_still_matches_the_live_home() {
@@ -169,31 +170,158 @@ test_recorded_alias_still_matches_the_live_home() {
   same_path "$home" "$alias_home" \
     || fail "path matching is not symmetric between spellings"
   # Both spellings canonicalize to the one physical directory.
-  [ "$(canonical_dir "$alias_home")" = "$(canonical_dir "$home")" ] \
+  [ "$(canonical_path "$alias_home")" = "$(canonical_path "$home")" ] \
     || fail "the two spellings did not canonicalize to the same directory"
   pass "a record holding the old aliased spelling still matches the live home"
 }
 
-test_distinct_directories_still_compare_unequal() {
+# A durable record holds file paths as well as directory paths - the watcher
+# lock's watcher-path is one - and a canonicalizer that only knows how to enter
+# a directory returns a file path unchanged with no signal. That silent no-op is
+# what left an aliased watcher-path in the lock, so pin both shapes here.
+test_a_file_path_canonicalizes_like_a_directory_path() {
+  local case_dir home alias_home
+  case_dir="$TMP_ROOT/tolerance"
+  home="$case_dir/home"
+  alias_home="$case_dir/aliashome"
+  mkdir -p "$home"
+  : > "$home/record"
+
+  [ "$(canonical_path "$alias_home/record")" = "$home/record" ] \
+    || fail "a file reached through an aliased directory was not resolved"
+  same_path "$alias_home/record" "$home/record" \
+    || fail "a recorded file path under an alias no longer matches its physical spelling"
+  pass "a file path canonicalizes and compares like a directory path"
+}
+
+test_distinct_paths_still_compare_unequal() {
   local case_dir
   case_dir="$TMP_ROOT/tolerance"
   mkdir -p "$case_dir/other"
   # Tolerance must not become "everything matches": two genuinely different
-  # directories, and a path that cannot be resolved at all, stay distinct.
+  # directories, two files sharing a parent, and a path that cannot be resolved
+  # at all, all stay distinct.
   same_path "$case_dir/home" "$case_dir/other" \
     && fail "two different directories compared as the same path"
+  same_path "$case_dir/home/record" "$case_dir/home/other-record" \
+    && fail "two files in the same directory compared as the same path"
   same_path "$case_dir/home" "$case_dir/does-not-exist" \
     && fail "an unresolvable path matched an existing directory"
-  # An unresolvable path falls back to its literal spelling rather than failing.
-  [ "$(canonical_dir "$case_dir/does-not-exist")" = "$case_dir/does-not-exist" ] \
-    || fail "an unresolvable path was not returned unchanged"
+  # A final component that does not exist keeps its own spelling rather than
+  # failing; only its parent resolves.
+  [ "$(canonical_path "$case_dir/does-not-exist")" = "$case_dir/does-not-exist" ] \
+    || fail "a path with an unresolvable final component was not returned unchanged"
+  # Nothing resolvable at all still comes back exactly as given.
+  [ "$(canonical_path "$case_dir/no-such-dir/no-such-file")" = "$case_dir/no-such-dir/no-such-file" ] \
+    || fail "a wholly unresolvable path was not returned unchanged"
   pass "spelling tolerance does not collapse genuinely different paths"
+}
+
+# --- the watcher lock ------------------------------------------------------
+#
+# state/.watch.lock is a durable record too, and it holds a PAIR of paths:
+# fm-home and watcher-path. fm_watcher_lock_matches_pid keys "is this watcher
+# mine?" on both, so one aliased field is enough. watcher-path comes from the
+# running watcher's own SCRIPT_DIR - a logical `pwd` - so a watcher armed
+# through an aliased spelling of the firstmate checkout records the alias, a
+# guard invoked through the other spelling then reads its own live watcher as
+# down, and fm-watch-arm.sh --restart arms a second supervision cycle beside it.
+
+WATCH_REAL="$(cd "$ROOT" && pwd -P)/bin/fm-watch.sh"
+
+make_watch_case() {  # <name>: a state dir, a fakebin, and an aliased checkout
+  local name=$1 dir state fakebin
+  dir="$TMP_ROOT/$name"
+  state="$dir/state"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$state"
+  fm_fake_exit0 "$fakebin" tmux
+  # The watcher runs its PR-check migration before the supervision loop;
+  # pre-complete it so these cases stay about the lock record.
+  printf '%s\n' fm-pr-check-migration-scan-v1 > "$state/.pr-check-migration-scan-v1"
+  printf '%s\n' fm-pr-check-migration-v1 > "$state/.pr-check-migration-v1"
+  chmod 0600 "$state/.pr-check-migration-scan-v1" "$state/.pr-check-migration-v1"
+  # The compatibility symlink, pointed at the real firstmate checkout: running
+  # bin/fm-watch.sh through it is what puts the alias in the watcher's own
+  # SCRIPT_DIR.
+  ln -s "$ROOT" "$dir/aliasroot"
+  WATCH_CASE_DIR=$dir
+  WATCH_CASE_STATE=$state
+  WATCH_CASE_FAKEBIN=$fakebin
+}
+
+test_aliased_watcher_path_does_not_leak_into_the_watch_lock() {
+  local out pid recorded i
+  make_watch_case watchlock
+  out="$WATCH_CASE_DIR/watch.out"
+  PATH="$WATCH_CASE_FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$WATCH_CASE_DIR" \
+    FM_HOME="$WATCH_CASE_DIR" FM_STATE_OVERRIDE="$WATCH_CASE_STATE" \
+    FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH_CASE_DIR/aliasroot/bin/fm-watch.sh" > "$out" 2>&1 &
+  pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$WATCH_CASE_STATE/.watch.lock/watcher-path" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  recorded=$(cat "$WATCH_CASE_STATE/.watch.lock/watcher-path" 2>/dev/null || true)
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ -n "$recorded" ] \
+    || fail "watcher never recorded a watcher-path: $(cat "$out" 2>/dev/null)"
+  [ "$recorded" = "$WATCH_REAL" ] \
+    || fail "watch lock did not record the resolved watcher path: $recorded"
+  case "$recorded" in
+    *alias*) fail "watch lock leaked an aliased spelling into a durable record: $recorded" ;;
+  esac
+  pass "a watcher armed through an aliased checkout records its resolved path"
+}
+
+test_recorded_alias_watcher_path_still_matches_the_live_watcher() {
+  local lock pid identity err
+  make_watch_case watchtolerance
+  lock="$WATCH_CASE_STATE/.watch.lock"
+  printf 'project=x\n' > "$WATCH_CASE_STATE/task.meta"
+  # A stand-in for the live watcher process: the guard only needs a live pid
+  # whose identity matches the one the lock recorded.
+  sleep 60 &
+  pid=$!
+  identity=$(fm_test_pid_identity "$pid") \
+    || fail "could not identify the stand-in watcher process"
+  mkdir -p "$lock"
+  printf '%s\n' "$pid" > "$lock/pid"
+  printf '%s\n' "$WATCH_CASE_DIR" > "$lock/fm-home"
+  # The single field under test, as a watcher armed before this change wrote it.
+  printf '%s\n' "$WATCH_CASE_DIR/aliasroot/bin/fm-watch.sh" > "$lock/watcher-path"
+  printf '%s\n' "$identity" > "$lock/pid-identity"
+  touch "$WATCH_CASE_STATE/.last-watcher-beat"
+  err="$WATCH_CASE_DIR/guard.err"
+  # The guard runs through the physical spelling, so its own watcher path is
+  # canonical while the lock's is not. A non-git FM_ROOT keeps the
+  # worktree-tangle check inert, leaving stderr a pure watcher-state signal.
+  # The persistent supervision model is pinned because only it asks the
+  # PID-strict question that reads the lock's recorded paths; under the
+  # auto-arm model the verdict is beacon freshness alone and this case would
+  # assert nothing, whatever harness the suite happens to run under.
+  FM_ROOT_OVERRIDE="$WATCH_CASE_DIR" FM_HOME="$WATCH_CASE_DIR" \
+    FM_STATE_OVERRIDE="$WATCH_CASE_STATE" FM_GUARD_GRACE=300 \
+    FM_SUPERVISION_MODEL=persistent \
+    "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null \
+    || fail "guard failed: $(cat "$err")"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ ! -s "$err" ] \
+    || fail "guard disowned a live watcher whose lock held the old spelling: $(cat "$err")"
+  pass "a lock holding the old aliased watcher path still matches the live watcher"
 }
 
 test_aliased_home_does_not_leak_into_project_record
 test_aliased_project_argument_is_resolved
 test_aliased_relative_project_argument_is_resolved
+test_aliased_watcher_path_does_not_leak_into_the_watch_lock
 test_recorded_alias_still_matches_the_live_home
-test_distinct_directories_still_compare_unequal
+test_a_file_path_canonicalizes_like_a_directory_path
+test_distinct_paths_still_compare_unequal
+test_recorded_alias_watcher_path_still_matches_the_live_watcher
 
 echo "# all fm-path-spelling tests passed"

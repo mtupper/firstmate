@@ -1695,7 +1695,7 @@ BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
 # false-positive (the isolation guard refuses a spawn that never tangled).
 # Resolving here keeps that guard correct on its own terms rather than on an
 # upstream invariant (docs/herdr-backend.md "Known gaps").
-PROJ_ABS_REAL=$(fm_canonical_dir "$PROJ_ABS")
+PROJ_ABS_REAL=$(fm_canonical_path "$PROJ_ABS")
 
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
@@ -2195,14 +2195,14 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # proven instead is that the adopted endpoint's shell is actually sitting in
   # that worktree, so the replacement agent starts where the work is rather
   # than wherever the pane happened to drift.
-  relaunch_wt_real=$(fm_canonical_dir "$WT")
+  relaunch_wt_real=$(fm_canonical_path "$WT")
   relaunch_seen=
   for _ in $(seq 1 10); do
     relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
-    [ -z "$relaunch_seen" ] || [ "$(fm_canonical_dir "$relaunch_seen")" != "$relaunch_wt_real" ] || break
+    [ -z "$relaunch_seen" ] || [ "$(fm_canonical_path "$relaunch_seen")" != "$relaunch_wt_real" ] || break
     sleep 0.5
   done
-  if [ -z "$relaunch_seen" ] || [ "$(fm_canonical_dir "$relaunch_seen")" != "$relaunch_wt_real" ]; then
+  if [ -z "$relaunch_seen" ] || [ "$(fm_canonical_path "$relaunch_seen")" != "$relaunch_wt_real" ]; then
     echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}', not its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
     exit 1
   fi
@@ -2234,7 +2234,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   for _ in $(seq 1 60); do
     p=$(spawn_current_path "$WT_TARGET" || true)
     if [ -n "$p" ]; then
-      p_real=$(fm_canonical_dir "$p")
+      p_real=$(fm_canonical_path "$p")
       if [ "$p_real" != "$PROJ_ABS_REAL" ]; then
         if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
           WT="$p"

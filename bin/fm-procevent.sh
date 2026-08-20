@@ -104,7 +104,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # a home recorded under a symlink alias would stop matching its own claims and
 # leave its runners orphaned. Comparisons against already-recorded claims still
 # go through fm_same_path, which resolves both sides.
-FM_HOME_CANON=$(fm_canonical_dir "$FM_HOME")
+FM_HOME_CANON=$(fm_canonical_path "$FM_HOME")
 
 REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
