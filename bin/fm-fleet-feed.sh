@@ -189,11 +189,16 @@ clone_path() {  # <project-name>
 }
 
 # Turn a git remote into a short label: github.com/owner/repo, /path/to/repo.
+# The scp-form separator is replaced with prefix/suffix removal rather than
+# pattern replacement, whose escaping differs on stock macOS Bash 3.2.
 remote_label() {  # <url>
   local u=${1%.git}
   u=${u#*://}
   u=${u#*@}
-  printf '%s\n' "${u/:/\/}"
+  case "$u" in
+    *:*) u="${u%%:*}/${u#*:}" ;;
+  esac
+  printf '%s\n' "$u"
 }
 
 clone_facts_json() {  # <project-name...>
