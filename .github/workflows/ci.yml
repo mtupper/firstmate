@@ -112,10 +112,18 @@ jobs:
   tests-portable-serial:
     name: Behavior portable serial ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # Measured whole remainder is ~19 min of serial work; the balanced shards
-    # are ~4.8 min each. Cap is a hang tripwire with roughly 3x margin, not the
-    # expected healthy end of the lane.
-    timeout-minutes: 15
+    # The cap is a HANG TRIPWIRE, not the expected healthy end of the lane, and
+    # it has to clear the slowest ordinary run rather than the average one.
+    # Measured on run 32432565066: the whole remainder is ~43 min of serial work
+    # over 113 scripts, so balanced shards are ~11 min each, and job setup
+    # (checkout, ShellCheck, tmux check, tasks-axi) adds only ~6 s.
+    # Balance alone is not enough. The hints in bin/fm-test-run.sh come from one
+    # measured run, while individual scripts swing 2-4x between runs on shared
+    # runners (fm-sessionstart-nudge ran 4.0x its hint on that run, fm-fleet-sync
+    # 2.8x). That pushed a shard estimated at ~11 min to ~15 min of real work and
+    # cancelled it with no hang present. 20 min leaves room for that variance, so
+    # the tripwire fires on a genuine hang instead of on an unlucky draw.
+    timeout-minutes: 20
     strategy:
       # Every shard reports so one failure never hides another shard's result.
       fail-fast: false
