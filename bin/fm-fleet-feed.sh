@@ -299,6 +299,22 @@ def dateof: if isdate then . else null end;
 def held: (.hold_reason != null) or ((.unresolved_blocker_ids // [] | length) > 0);
 def n($one; $many): if . == 1 then "\(.) \($one)" else "\(.) \($many)" end;
 def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
+# ONE rule for the whole document. A worker is called gone, missing or stopped
+# ONLY where positive evidence says so: its run reached a terminal failure, or
+# nothing could speak for it AND its endpoint is absent or dead. The absence of
+# a `working` state is never itself that evidence - `unknown` on a live endpoint
+# is bin/fm-crew-state.sh declining to claim anything, and `parked` and `paused`
+# are declared waits. Every sentence, title, detail, metric, signal and health
+# branch below reads worker_gone rather than re-deriving its own test.
+def worker_gone:
+  (.current_state.state == "failed")
+  or (.current_state.state == "unknown"
+      and ((.endpoint.status // "") == "absent"
+           or (.endpoint.status // "") == "dead"));
+# A finished run whose backlog row still says in flight is bookkeeping drift,
+# not a departure: the run declared its own completion, so the remedy is to
+# mark the item done, never to restart or requeue finished work.
+def run_finished: (.current_state.state == "done");
 
 . as $snap
 | ($names | split("\n") | map(select(. != ""))) as $names
@@ -335,17 +351,12 @@ def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
    | ($open | map(select(.hold_reason != null and .hold_kind != "captain"))) as $other_holds
    | ($queued | map(select((held | not)))) as $ready
    | ([$tasks[] | select(.current_state.state == "working")]) as $working
-   # A worker recorded in flight has stopped only where the evidence says so:
-   # its run reached a terminal state, or nothing could speak for it AND its
-   # endpoint is gone. `unknown` on a live endpoint is upstream declining to
-   # claim anything (bin/fm-crew-state.sh), and `parked` and `paused` are
-   # declared waits, so none of the three is turned into a claim of death here.
    | ([$tasks[]
        | select((.backlog.state // "") == "in_flight")
-       | select(.current_state.state == "done" or .current_state.state == "failed"
-                or (.current_state.state == "unknown"
-                    and ((.endpoint.status // "") == "absent"
-                         or (.endpoint.status // "") == "dead")))]) as $stopped
+       | select(worker_gone)]) as $stopped
+   | ([$tasks[]
+       | select((.backlog.state // "") == "in_flight")
+       | select(run_finished)]) as $drifted
    | ([$tasks[] | . as $t | (.hints.open_decisions // [])[]
        | select(.verb == "needs-decision") | . + {task: $t.id}]) as $live_decisions
    | ([$tasks[] | . as $t | (.hints.open_decisions // [])[]
@@ -395,6 +406,8 @@ def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
         (if ($open | all(.hold_kind == "captain"))
          then "Every open item is waiting on the captain; \($open | length | n("item is"; "items are")) held."
          else "Every open item is held or waiting on other work; nothing can move." end)
+      elif ($drifted | length) > 0 then
+        "\($drifted[0].id) has finished, but the backlog still records it in flight."
       elif ($inflight | length) > 0 then
         "Under way: \($inflight[0].title)"
         + (if ($captain_holds | length) > 0
@@ -437,9 +450,17 @@ def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
            unblockedBy: "Firstmate unblocking the worker or reassigning the work."}
       ] + [ $stopped[]
         | {title: ("the worker on \(.id) is no longer running" | trunc(160)),
-           detail: ("The item is recorded in flight, but its worker is gone and no pause was declared." | trunc(500)),
+           detail: ((if .current_state.state == "failed"
+                     then "Its run reported itself failed while the item is still recorded in flight."
+                     else "The item is recorded in flight and its endpoint is gone, so nothing is left running it."
+                     end) | trunc(500)),
            severity: "critical", owner: "agents",
            unblockedBy: "Restarting the work or returning the item to the queue."}
+      ] + [ $drifted[]
+        | {title: ("\(.id) has finished but is still recorded in flight" | trunc(160)),
+           detail: ("Its run reported itself done; only the backlog row is out of date." | trunc(500)),
+           severity: "minor", owner: "shared",
+           unblockedBy: "Marking the item done in the backlog."}
       ] + [ $captain_holds[] | select(.state == "in_flight")
         | {title: (.title | trunc(160)),
            detail: (.hold_reason | trunc(500)),
@@ -471,9 +492,11 @@ def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
    # --- next three for each side --------------------------------------------
    | ([ $open_prs[]
         | {title: ("Decide on \(.pr.url)" | trunc(160)),
-           why: ((if .current_state.state == "done"
+           why: ((if run_finished
                   then "The work is finished and waiting for the captain to say whether it lands."
-                  else "A pull request is open and no worker is running on it, so it waits for the captain."
+                  elif worker_gone
+                  then "Its worker is no longer running and the pull request is still open."
+                  else "A pull request is open while the item is still recorded in flight."
                   end) | trunc(300))}
       ] + [ $captain_holds[] | select(.state == "in_flight")
         | {title: (.title | trunc(160)),
@@ -501,8 +524,15 @@ def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
    # --- checkable facts behind the summary ----------------------------------
    | ([ {label: "Dispatched work",
          value: (if ($working | length) > 0 then ($working | length | n("worker running"; "workers running"))
-                 elif ($inflight | length) > 0 then ($inflight | length | n("item in flight, no worker"; "items in flight, no worker"))
-                 else "nothing dispatched" end | trunc(120)),
+                 elif ($inflight | length) == 0 then "nothing dispatched"
+                 elif ($tasks | length) == 0
+                   then ($inflight | length | n("item in flight, no worker"; "items in flight, no worker"))
+                 elif ($stopped | length) > 0
+                   then ($stopped | length | n("item in flight, worker no longer running"; "items in flight, worker no longer running"))
+                 elif ($drifted | length) > 0
+                   then ($drifted | length | n("item in flight whose run has finished"; "items in flight whose run has finished"))
+                 else ($inflight | length | n("item in flight, worker state not reported"; "items in flight, worker state not reported"))
+                 end | trunc(120)),
          state: (if ($stopped | length) > 0 or ($orphaned | length) > 0 then "bad"
                  elif ($working | length) > 0 then "good"
                  elif ($queued | length) > 0 then "watch"

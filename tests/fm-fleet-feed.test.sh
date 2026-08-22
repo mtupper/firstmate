@@ -282,6 +282,7 @@ cat > "$HOME_C/data/projects.md" <<'EOF'
 - halted [local-only] - Its worker's run failed (added 2026-07-01)
 - busy [local-only] - A running worker and only old recorded dates (added 2026-05-01)
 - landing [local-only] - A finished pull request waiting on the captain (added 2026-07-01)
+- parked [local-only] - A live worker parked at a gate with a pull request open (added 2026-07-01)
 - crowded [local-only] - More open holds than the display cap (added 2026-07-01)
 EOF
 
@@ -291,6 +292,7 @@ cat > "$HOME_C/data/backlog.md" <<'EOF'
 - [ ] gone-ship - Ship the gone thing (repo: gone) (kind: ship) (since 2026-07-08)
 - [ ] halted-ship - Ship the halted thing (repo: halted) (kind: ship) (since 2026-07-08)
 - [ ] landing-ship - Ship the landing thing (repo: landing) (kind: ship) (since 2026-07-08)
+- [ ] parked-ship - Ship the parked thing (repo: parked) (kind: ship) (since 2026-07-08)
 
 ## Queued
 - [ ] busy-next - Add the busy thing (repo: busy) (kind: ship) (since 2026-05-01)
@@ -306,7 +308,7 @@ for i in 1 2 3 4 5 6 7 8 9; do
     "$i" "$i" "$i" >> "$HOME_C/data/backlog.md"
 done
 
-for p in quiet gone halted busy landing; do
+for p in quiet gone halted busy landing parked; do
   make_clone "$HOME_C" "$p" "https://github.com/acme/$p.git"
 done
 
@@ -346,6 +348,17 @@ fm_write_meta "$HOME_C/state/landing-ship.meta" \
 record_claude_state "$HOME_C/state" landing-ship idle
 printf 'done: the checks are green\n' > "$HOME_C/state/landing-ship.status"
 
+# A live worker parked at a gate: its pane is alive, its process is running, and
+# it has a pull request open. Nothing here says the worker went away.
+fm_write_meta "$HOME_C/state/parked-ship.meta" \
+  "window=firstmate:fm-parked-ship" \
+  "worktree=$HOME_C/projects/parked" "project=$HOME_C/projects/parked" \
+  "harness=claude" "kind=ship" "mode=no-mistakes" \
+  "pr=https://github.com/acme/parked/pull/7"
+record_claude_state "$HOME_C/state" parked-ship idle
+printf 'needs-decision [key=fmt]: which format should the exporter write\n' \
+  > "$HOME_C/state/parked-ship.status"
+
 FEED_C=$(run "$HOME_C" "$FAKEBIN_C" --stdout) || fail "generating the home-c feed failed"
 
 Q=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "quiet")')
@@ -362,7 +375,23 @@ printf '%s' "$G" | jq -e '[.blockers[] | select(.title | contains("no longer run
 H=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "halted")')
 printf '%s' "$H" | jq -e '[.blockers[] | select(.title | contains("no longer running"))] | length == 1' >/dev/null \
   || fail "a worker whose run failed should still be reported as stopped"
+printf '%s' "$H" | jq -e '[.blockers[] | select(.title | contains("no longer running"))][0].detail
+                          | contains("reported itself failed")' >/dev/null \
+  || fail "the detail should name the evidence, not the absence of a pause: $(printf '%s' "$H" | jq -c '.blockers')"
+printf '%s' "$G" | jq -e '[.blockers[] | select(.title | contains("no longer running"))][0].detail
+                          | contains("endpoint is gone")' >/dev/null \
+  || fail "a gone endpoint should be named as the evidence: $(printf '%s' "$G" | jq -c '.blockers')"
 pass "a live but quiet worker is not called vanished, while a gone or failed one is"
+
+# --- a signal may not deny the worker its own evidence field lists -----------
+QD=$(printf '%s' "$Q" | jq '[.currentStatus.signals[] | select(.label == "Dispatched work")][0]')
+printf '%s' "$QD" | jq -e '.value | contains("no worker") | not' >/dev/null \
+  || fail "the dispatched-work value must not deny a worker: $(printf '%s' "$QD" | jq -c '{value,evidence}')"
+printf '%s' "$QD" | jq -e '.value == "1 item in flight, worker state not reported"' >/dev/null \
+  || fail "an unreported worker state should be reported as unreported: $(printf '%s' "$QD" | jq -c '.value')"
+printf '%s' "$QD" | jq -e '.evidence | contains("quiet-ship")' >/dev/null \
+  || fail "the evidence should still list the task record behind the value"
+pass "the dispatched-work value never denies a worker its own evidence lists"
 
 B=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "busy")')
 printf '%s' "$B" | jq -e '.status == "active"' >/dev/null \
@@ -392,6 +421,37 @@ printf '%s' "$L" | jq -e '.captainTasks[0].title == "Decide on https://github.co
 printf '%s' "$L" | jq -e '.captainTasks[0].why | startswith("The work is finished")' >/dev/null \
   || fail "work whose run reported done is finished, and may be described that way"
 pass "a pull request whose run finished still reaches the captain as a decision"
+
+# --- a finished run with a stale row is drift, not a vanished worker ---------
+# The same card may not call one item finished and call its worker gone.
+printf '%s' "$L" | jq -e '[.blockers[] | select(.title | contains("no longer running"))] | length == 0' >/dev/null \
+  || fail "a finished run must not be reported as a vanished worker: $(printf '%s' "$L" | jq -c '.blockers')"
+printf '%s' "$L" | jq -e '[.blockers[] | select(.severity == "critical")] | length == 0' >/dev/null \
+  || fail "bookkeeping drift must not raise a critical blocker"
+printf '%s' "$L" | jq -e '.health == "on-track"' >/dev/null \
+  || fail "bookkeeping drift must not force health to blocked: $(printf '%s' "$L" | jq -c '.health')"
+printf '%s' "$L" | jq -e '[.blockers[] | select(.title | contains("still recorded in flight"))][0]
+                          | .severity == "minor"
+                            and .unblockedBy == "Marking the item done in the backlog."' >/dev/null \
+  || fail "drift should be a minor item whose remedy is to mark it done: $(printf '%s' "$L" | jq -c '.blockers')"
+printf '%s' "$L" | jq -e '[.blockers[].unblockedBy] | any(test("(?i)restart|queue")) | not' >/dev/null \
+  || fail "finished work must never be offered a restart or requeue remedy"
+printf '%s' "$L" | jq -e '.headline | contains("has finished, but the backlog still records it in flight")' >/dev/null \
+  || fail "the headline should state the drift: $(printf '%s' "$L" | jq -c '.headline')"
+pass "a finished run with a stale backlog row is drift, not a vanished worker"
+
+# --- a parked worker is a live worker ---------------------------------------
+P=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "parked")')
+printf '%s' "$P" | jq -e '.captainTasks[0].title == "Decide on https://github.com/acme/parked/pull/7"' >/dev/null \
+  || fail "an open pull request should still reach the captain: $(printf '%s' "$P" | jq -c '.captainTasks')"
+printf '%s' "$P" | jq -e '.captainTasks[0].why | contains("no worker is running") | not' >/dev/null \
+  || fail "a parked worker is running; the card must not say otherwise: $(printf '%s' "$P" | jq -c '.captainTasks[0].why')"
+printf '%s' "$P" | jq -e '[.blockers[] | select(.title | contains("no longer running"))] | length == 0' >/dev/null \
+  || fail "a parked worker must not be reported as gone"
+printf '%s' "$P" | jq -e '[.currentStatus.signals[] | select(.label == "Dispatched work")][0].value
+                          | contains("no worker") | not' >/dev/null \
+  || fail "the dispatched-work value must not deny a parked worker"
+pass "a parked worker with an open pull request is never described as absent"
 
 # --- firstmate never writes into a project ----------------------------------
 GOOD="$TMP_ROOT/good-feed.json"
