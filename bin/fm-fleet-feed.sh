@@ -48,6 +48,10 @@
 #   fm-fleet-feed.sh --stdout               print the feed, write nothing
 #   fm-fleet-feed.sh --active-days <n>      recency window for active (default 14)
 #   fm-fleet-feed.sh -h | --help            print this usage
+#
+# Environment:
+#   FM_FLEET_FEED_CLONE_TIMEOUT   seconds bounding each read of a project clone
+#                                 (default 10); must be a positive integer
 set -u
 
 CONTRACT_VERSION=1.0.0
