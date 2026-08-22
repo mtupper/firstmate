@@ -92,6 +92,14 @@ done
 case "$ACTIVE_DAYS" in
   ''|*[!0-9]*) die "--active-days must be a non-negative integer" 2 ;;
 esac
+# bin/fm-timeout-lib.sh puts the obligation on the caller: `timeout 0` and the
+# perl fallback's `alarm 0` both DISABLE the deadline, so a non-positive bound
+# is not a bound and must be refused before any read runs unguarded.
+case "$CLONE_READ_TIMEOUT" in
+  ''|*[!0-9]*) die "FM_FLEET_FEED_CLONE_TIMEOUT must be a positive integer of seconds" 2 ;;
+esac
+[ "$CLONE_READ_TIMEOUT" -gt 0 ] \
+  || die "FM_FLEET_FEED_CLONE_TIMEOUT must be a positive integer of seconds; 0 would disable the bound it exists to enforce" 2
 [ "$OUT_GIVEN" -eq 1 ] && [ -z "$OUT" ] && die "--out needs a path" 2
 [ "$TO_STDOUT" -eq 1 ] && [ "$OUT_GIVEN" -eq 1 ] && die "--stdout and --out are mutually exclusive" 2
 [ -n "$OUT" ] || OUT="$DATA/fleet-feed.json"
@@ -327,26 +335,34 @@ def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
    | ($open | map(select(.hold_reason != null and .hold_kind != "captain"))) as $other_holds
    | ($queued | map(select((held | not)))) as $ready
    | ([$tasks[] | select(.current_state.state == "working")]) as $working
-   # A worker recorded in flight that is neither running nor deliberately
-   # paused has stopped without saying so. `paused:` is a declared external
-   # wait (bin/fm-classify-lib.sh owns that vocabulary), so it is not a stop.
+   # A worker recorded in flight has stopped only where the evidence says so:
+   # its run reached a terminal state, or nothing could speak for it AND its
+   # endpoint is gone. `unknown` on a live endpoint is upstream declining to
+   # claim anything (bin/fm-crew-state.sh), and `parked` and `paused` are
+   # declared waits, so none of the three is turned into a claim of death here.
    | ([$tasks[]
-       | select((.backlog.state // "") == "in_flight"
-                and .current_state.state != "working"
-                and ((.paths.status_log.last_event.state // "") != "paused"))]) as $stopped
+       | select((.backlog.state // "") == "in_flight")
+       | select(.current_state.state == "done" or .current_state.state == "failed"
+                or (.current_state.state == "unknown"
+                    and ((.endpoint.status // "") == "absent"
+                         or (.endpoint.status // "") == "dead")))]) as $stopped
    | ([$tasks[] | . as $t | (.hints.open_decisions // [])[]
        | select(.verb == "needs-decision") | . + {task: $t.id}]) as $live_decisions
    | ([$tasks[] | . as $t | (.hints.open_decisions // [])[]
        | select(.verb == "blocked") | . + {task: $t.id}]) as $live_blocked
-   | ([$tasks[] | select((.pr.url // "") != "" and (.backlog.state // "") != "done")]) as $open_prs
+   # A raised PR is not finished work. While a worker is still running on the
+   # item its pipeline may be mid-CI, so there is nothing for the captain to
+   # decide yet and it is not offered as a decision.
+   | ([$tasks[] | select((.pr.url // "") != "" and (.backlog.state // "") != "done"
+                         and .current_state.state != "working")]) as $open_prs
    | ($inflight | map(select(.id as $i | $orphans | index($i)))) as $orphaned
    | ([$recs[] | (.since | dateof), (.completion.date | dateof)]
       | map(select(. != null)) | sort | last) as $last_date
    | ($done | map(select((.completion.date | isdate)))
       | sort_by(.completion.date) | last) as $last_landed
 
-   | (if (($tasks | length) > 0 and ($inflight | length) > 0) then true
-      elif ($inflight | length) > 0 then true
+   | (if ($inflight | length) > 0 then true
+      elif ($working | length) > 0 then true
       elif ($last_date != null and $last_date >= $cutoff) then true
       else false end) as $is_active
 
@@ -406,8 +422,12 @@ def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
            owner: "captain",
            urgency: "now"}
       ]
-      | sort_by(if .urgency == "now" then 0 elif .urgency == "soon" then 1 else 2 end)
-      | .[:8]) as $decisions
+      | sort_by(if .urgency == "now" then 0 elif .urgency == "soon" then 1 else 2 end))
+      as $decisions_all
+   # The emitted list is capped for display; every COUNT below is taken from the
+   # uncapped total, because reporting a display cap as the total would under-
+   # report real work.
+   | ($decisions_all[:8]) as $decisions
 
    # --- what is actually stopping progress ----------------------------------
    | ([ $live_blocked[]
@@ -444,13 +464,17 @@ def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
            since: ((.since | dateof) | trunc(60)),
            unblockedBy: "The hold reason clearing."}
       ]
-      | sort_by(if .severity == "critical" then 0 elif .severity == "major" then 1 else 2 end)
-      | .[:8]) as $blockers
+      | sort_by(if .severity == "critical" then 0 elif .severity == "major" then 1 else 2 end))
+      as $blockers_all
+   | ($blockers_all[:8]) as $blockers
 
    # --- next three for each side --------------------------------------------
    | ([ $open_prs[]
         | {title: ("Decide on \(.pr.url)" | trunc(160)),
-           why: ("The work is finished and waiting for the captain to say whether it lands." | trunc(300))}
+           why: ((if .current_state.state == "done"
+                  then "The work is finished and waiting for the captain to say whether it lands."
+                  else "A pull request is open and no worker is running on it, so it waits for the captain."
+                  end) | trunc(300))}
       ] + [ $captain_holds[] | select(.state == "in_flight")
         | {title: (.title | trunc(160)),
            detail: (.hold_reason | trunc(400)),
@@ -487,9 +511,9 @@ def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
                     then ("Task records: \([$tasks[].id] | join(", "))." | trunc(300))
                     else null end)},
         {label: "Decisions waiting on the captain",
-         value: (if ($decisions | length) > 0 then ($decisions | length | n("open"; "open")) else "none open" end | trunc(120)),
-         state: (if ($decisions | any(.urgency == "now")) then "bad"
-                 elif ($decisions | length) > 0 then "watch" else "good" end),
+         value: (if ($decisions_all | length) > 0 then ($decisions_all | length | n("open"; "open")) else "none open" end | trunc(120)),
+         state: (if ($decisions_all | any(.urgency == "now")) then "bad"
+                 elif ($decisions_all | length) > 0 then "watch" else "good" end),
          evidence: (if ($captain_holds | length) > 0
                     then ("Held items: \([$captain_holds[].id] | join(", "))." | trunc(300))
                     else null end)},
@@ -507,7 +531,11 @@ def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
          state: (if $c.read == "ok" and ($c.dirty | not) then "good"
                  elif $c.read == "ok" then "watch"
                  else "unknown" end),
-         evidence: ($c.path | trunc(300))}
+         # Trimmed to its last two segments exactly as `source` trims the home
+         # below, so a rendered card never carries the local username or the
+         # directory layout of the machine that generated it.
+         evidence: (if $c.path == null then null
+                    else ($c.path | split("/") | .[-2:] | join("/") | trunc(300)) end)}
       ] + (if $r == null then
         [{label: "Project registry", value: "not registered", state: "watch",
           evidence: "Named by backlog items or live task records but absent from data/projects.md."}]
@@ -530,10 +558,10 @@ def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
        executiveSummary: (if ($recs | length) == 0 then null else {
          lede: ("\($name) has \($recs | length | n("item"; "items")) recorded: "
                 + "\($inflight | length) in flight, \($queued | length) queued, \($done | length) landed. "
-                + (if ($decisions | length) > 0
-                   then "\($decisions | length | n("decision waits"; "decisions wait")) on the captain. " else "No decision waits on the captain. " end)
-                + (if ($blockers | length) > 0
-                   then "\($blockers | length | n("thing is"; "things are")) stopping progress. " else "Nothing is stopping progress. " end)
+                + (if ($decisions_all | length) > 0
+                   then "\($decisions_all | length | n("decision waits"; "decisions wait")) on the captain. " else "No decision waits on the captain. " end)
+                + (if ($blockers_all | length) > 0
+                   then "\($blockers_all | length | n("thing is"; "things are")) stopping progress. " else "Nothing is stopping progress. " end)
                 + (if $last_date != null then "Last activity \($last_date)." else "No dated activity recorded." end)
                 | trunc(600)),
          metrics: [
@@ -541,10 +569,10 @@ def proj_of: (.backlog.repo // ((.project // "") | split("/") | last) // "");
             tone: (if ($stopped | length) > 0 then "bad" elif ($working | length) > 0 then "good" else "neutral" end)},
            {label: "Queued", value: ($queued | length | tostring), tone: "neutral"},
            {label: "Landed", value: ($done | length | tostring), tone: "good"},
-           {label: "Captain decisions", value: ($decisions | length | tostring),
-            tone: (if ($decisions | length) > 0 then "warn" else "good" end)},
-           {label: "Stopping progress", value: ($blockers | length | tostring),
-            tone: (if ($blockers | length) > 0 then "bad" else "good" end)},
+           {label: "Captain decisions", value: ($decisions_all | length | tostring),
+            tone: (if ($decisions_all | length) > 0 then "warn" else "good" end)},
+           {label: "Stopping progress", value: ($blockers_all | length | tostring),
+            tone: (if ($blockers_all | length) > 0 then "bad" else "good" end)},
            {label: "Last activity", value: (($last_date // "none") | trunc(24)), tone: "neutral"}
          ]
        } end),

@@ -174,6 +174,23 @@ printf '%s' "$R" | jq -e '[.currentStatus.signals[] | select(.label == "Local co
   || fail "a clean clone should read as a good local copy"
 pass "a fully populated project carries every field this home has evidence for"
 
+# --- a rendered card must not carry this operator's directory layout ---------
+printf '%s' "$R" | jq -e '[.currentStatus.signals[] | select(.label == "Local copy")][0].evidence
+                          == "projects/rich"' >/dev/null \
+  || fail "the local copy evidence should be trimmed like the source field: $(printf '%s' "$R" | jq -c '[.currentStatus.signals[] | select(.label == "Local copy")][0].evidence')"
+printf '%s' "$FEED_A" | jq -e --arg home "$HOME_A" 'tostring | contains($home) | not' >/dev/null \
+  || fail "no part of the feed may carry the absolute home path"
+pass "the feed carries no absolute local path into a rendered card"
+
+# --- in-flight work with a raised PR is not finished work -------------------
+# rich-ship carries pr=.../pull/9 and its worker is running, so its pipeline may
+# still be mid-CI; the captain has nothing to decide about it yet.
+printf '%s' "$R" | jq -e '[.captainTasks[].title] | any(contains("pull/9")) | not' >/dev/null \
+  || fail "a PR whose worker is still running must not be offered as a captain decision"
+printf '%s' "$R" | jq -e '[.captainTasks[].why] | any(contains("The work is finished")) | not' >/dev/null \
+  || fail "running work must never be described to the captain as finished"
+pass "a PR raised by a still-running worker is not presented as finished work"
+
 # --- decisions, blockers and the next three on each side --------------------
 printf '%s' "$R" | jq -e '.decisions | length == 2' >/dev/null \
   || fail "rich has two captain holds open: $(printf '%s' "$R" | jq -c '.decisions')"
@@ -188,10 +205,10 @@ printf '%s' "$R" | jq -e '[.blockers[] | select(.title | startswith("Wire the ex
                           | .severity == "major" and (.unblockedBy | startswith("rich-missing"))' >/dev/null \
   || fail "an item gated by unfinished work should name what would clear it"
 
-printf '%s' "$R" | jq -e '.captainTasks | length == 3' >/dev/null \
-  || fail "captainTasks is capped at the next three"
-printf '%s' "$R" | jq -e '.captainTasks[0].title == "Decide on https://github.com/acme/rich/pull/9"' >/dev/null \
-  || fail "a finished PR waiting on the captain should lead their list"
+printf '%s' "$R" | jq -e '.captainTasks | length == 2' >/dev/null \
+  || fail "rich has exactly its two captain holds to decide: $(printf '%s' "$R" | jq -c '.captainTasks')"
+printf '%s' "$R" | jq -e '.captainTasks[0].title == "Choose the storage format"' >/dev/null \
+  || fail "the hold that stopped in-flight work should lead the captain's list"
 printf '%s' "$R" | jq -e '.agentTasks | length == 2' >/dev/null \
   || fail "only the two ungated queued items are dispatchable"
 printf '%s' "$R" | jq -e '[.agentTasks[].title] == ["Add the importer", "Tidy the fixtures"]' >/dev/null \
@@ -250,6 +267,132 @@ printf '%s' "$P_A" | jq -e 'has("blockers") and (.blockers | length) == 0' >/dev
   || fail "the checked case must still emit an empty array"
 pass "absent and empty are distinguished: checked reports [], unreadable omits the field"
 
+# --- home C: what "the worker stopped" may and may not be read from ---------
+# A worker that has not spoken yet, one whose window is gone, one whose run
+# failed, one that is running with no in-flight row, one with a finished pull
+# request, and one with more open holds than the display cap.
+HOME_C=$(new_home home-c)
+FAKEBIN_C=$(make_fakebin "$HOME_C")
+
+cat > "$HOME_C/data/projects.md" <<'EOF'
+# Projects
+
+- quiet [local-only] - Its worker is live but has written no status line yet (added 2026-07-01)
+- gone [local-only] - Its worker's window is gone (added 2026-07-01)
+- halted [local-only] - Its worker's run failed (added 2026-07-01)
+- busy [local-only] - A running worker and only old recorded dates (added 2026-05-01)
+- landing [local-only] - A finished pull request waiting on the captain (added 2026-07-01)
+- crowded [local-only] - More open holds than the display cap (added 2026-07-01)
+EOF
+
+cat > "$HOME_C/data/backlog.md" <<'EOF'
+## In flight
+- [ ] quiet-ship - Ship the quiet thing (repo: quiet) (kind: ship) (since 2026-07-08)
+- [ ] gone-ship - Ship the gone thing (repo: gone) (kind: ship) (since 2026-07-08)
+- [ ] halted-ship - Ship the halted thing (repo: halted) (kind: ship) (since 2026-07-08)
+- [ ] landing-ship - Ship the landing thing (repo: landing) (kind: ship) (since 2026-07-08)
+
+## Queued
+- [ ] busy-next - Add the busy thing (repo: busy) (kind: ship) (since 2026-05-01)
+EOF
+
+# Twelve captain holds and nine gated items, both over the eight-item display cap.
+for i in 01 02 03 04 05 06 07 08 09 10 11 12; do
+  printf -- '- [ ] crowded-hold-%s - Decide item %s (repo: crowded) (kind: captain) (since 2026-07-06) (hold: the captain must choose option %s) (hold-kind: captain)\n' \
+    "$i" "$i" "$i" >> "$HOME_C/data/backlog.md"
+done
+for i in 1 2 3 4 5 6 7 8 9; do
+  printf -- '- [ ] crowded-gated-%s - Wire item %s blocked-by: crowded-missing-%s (repo: crowded) (kind: ship) (since 2026-07-06)\n' \
+    "$i" "$i" "$i" >> "$HOME_C/data/backlog.md"
+done
+
+for p in quiet gone halted busy landing; do
+  make_clone "$HOME_C" "$p" "https://github.com/acme/$p.git"
+done
+
+# Live pane, idle harness, no status line yet: crew state reads `unknown`, which
+# upstream means "I cannot tell", not "the worker is gone".
+fm_write_meta "$HOME_C/state/quiet-ship.meta" \
+  "window=firstmate:fm-quiet-ship" \
+  "worktree=$HOME_C/projects/quiet" "project=$HOME_C/projects/quiet" \
+  "harness=claude" "kind=ship" "mode=local-only"
+record_claude_state "$HOME_C/state" quiet-ship idle
+
+fm_write_meta "$HOME_C/state/gone-ship.meta" \
+  "window=firstmate:dead-fm-gone-ship" \
+  "worktree=$HOME_C/projects/gone" "project=$HOME_C/projects/gone" \
+  "harness=claude" "kind=ship" "mode=local-only"
+
+fm_write_meta "$HOME_C/state/halted-ship.meta" \
+  "window=firstmate:fm-halted-ship" \
+  "worktree=$HOME_C/projects/halted" "project=$HOME_C/projects/halted" \
+  "harness=claude" "kind=ship" "mode=local-only"
+record_claude_state "$HOME_C/state" halted-ship idle
+printf 'failed: the build could not be repaired\n' > "$HOME_C/state/halted-ship.status"
+
+# A running worker whose only backlog row is queued and long out of the window.
+fm_write_meta "$HOME_C/state/busy-probe.meta" \
+  "window=firstmate:fm-busy-probe" \
+  "worktree=$HOME_C/projects/busy" "project=$HOME_C/projects/busy" \
+  "harness=claude" "kind=ship" "mode=local-only"
+record_claude_state "$HOME_C/state" busy-probe busy
+printf 'working: still going\n' > "$HOME_C/state/busy-probe.status"
+
+fm_write_meta "$HOME_C/state/landing-ship.meta" \
+  "window=firstmate:fm-landing-ship" \
+  "worktree=$HOME_C/projects/landing" "project=$HOME_C/projects/landing" \
+  "harness=claude" "kind=ship" "mode=local-only" \
+  "pr=https://github.com/acme/landing/pull/3"
+record_claude_state "$HOME_C/state" landing-ship idle
+printf 'done: the checks are green\n' > "$HOME_C/state/landing-ship.status"
+
+FEED_C=$(run "$HOME_C" "$FAKEBIN_C" --stdout) || fail "generating the home-c feed failed"
+
+Q=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "quiet")')
+printf '%s' "$Q" | jq -e '[.blockers[] | select(.title | contains("no longer running"))] | length == 0' >/dev/null \
+  || fail "a worker that has not spoken yet must not be reported as gone: $(printf '%s' "$Q" | jq -c '.blockers')"
+printf '%s' "$Q" | jq -e '.health == "on-track"' >/dev/null \
+  || fail "a quiet worker must not force the project to blocked: $(printf '%s' "$Q" | jq -c '.health')"
+printf '%s' "$Q" | jq -e '.headline | contains("no longer running") | not' >/dev/null \
+  || fail "the headline must not claim a live worker has stopped"
+
+G=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "gone")')
+printf '%s' "$G" | jq -e '[.blockers[] | select(.title | contains("no longer running"))] | length == 1' >/dev/null \
+  || fail "a worker whose window is gone should still be reported as stopped"
+H=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "halted")')
+printf '%s' "$H" | jq -e '[.blockers[] | select(.title | contains("no longer running"))] | length == 1' >/dev/null \
+  || fail "a worker whose run failed should still be reported as stopped"
+pass "a live but quiet worker is not called vanished, while a gone or failed one is"
+
+B=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "busy")')
+printf '%s' "$B" | jq -e '.status == "active"' >/dev/null \
+  || fail "a project with a running worker is not dormant: $(printf '%s' "$B" | jq -c '{status,headline}')"
+printf '%s' "$B" | jq -e '[.currentStatus.signals[] | select(.label == "Dispatched work")][0].value == "1 worker running"' >/dev/null \
+  || fail "the card and the status must agree that a worker is running"
+pass "a project with a running worker reads as active, not dormant"
+
+C=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "crowded")')
+printf '%s' "$C" | jq -e '(.decisions | length) == 8 and (.blockers | length) == 8' >/dev/null \
+  || fail "the emitted lists stay capped at eight: $(printf '%s' "$C" | jq -c '{d:(.decisions|length),b:(.blockers|length)}')"
+printf '%s' "$C" | jq -e '[.executiveSummary.metrics[] | select(.label == "Captain decisions")][0].value == "12"' >/dev/null \
+  || fail "the captain-decisions metric must count all twelve holds, not the eight shown"
+printf '%s' "$C" | jq -e '[.executiveSummary.metrics[] | select(.label == "Stopping progress")][0].value == "9"' >/dev/null \
+  || fail "the stopping-progress metric must count all nine blockers, not the eight shown"
+printf '%s' "$C" | jq -e '[.currentStatus.signals[] | select(.label == "Decisions waiting on the captain")][0].value == "12 open"' >/dev/null \
+  || fail "the decisions signal must report the true number waiting"
+printf '%s' "$C" | jq -e '.executiveSummary.lede
+                          | contains("12 decisions wait on the captain")
+                            and contains("9 things are stopping progress")' >/dev/null \
+  || fail "the lede must state the true totals: $(printf '%s' "$C" | jq -c '.executiveSummary.lede')"
+pass "counts report the uncapped totals while the displayed lists stay capped"
+
+L=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "landing")')
+printf '%s' "$L" | jq -e '.captainTasks[0].title == "Decide on https://github.com/acme/landing/pull/3"' >/dev/null \
+  || fail "a finished pull request should lead the captain's list: $(printf '%s' "$L" | jq -c '.captainTasks')"
+printf '%s' "$L" | jq -e '.captainTasks[0].why | startswith("The work is finished")' >/dev/null \
+  || fail "work whose run reported done is finished, and may be described that way"
+pass "a pull request whose run finished still reaches the captain as a decision"
+
 # --- firstmate never writes into a project ----------------------------------
 GOOD="$TMP_ROOT/good-feed.json"
 run "$HOME_A" "$FAKEBIN_A" --out "$GOOD" >/dev/null || fail "writing a feed to a normal path failed"
@@ -264,6 +407,30 @@ expect_code 2 "$CODE" "writing inside the projects root"
 assert_contains "$OUT" "refusing to write inside the projects root" "the refusal should say why"
 assert_absent "$HOME_A/projects/rich/fleet.json" "no file may be written under projects/"
 pass "an output path inside the projects root is refused"
+
+# The traversal leg is resolved physically, not by comparing the literal string.
+set +e
+OUT=$(run "$HOME_A" "$FAKEBIN_A" --out "$HOME_A/data/../projects/rich/fleet.json" 2>&1)
+CODE=$?
+set -e
+expect_code 2 "$CODE" "traversing into the projects root"
+assert_contains "$OUT" "refusing to write inside the projects root" "the refusal should say why"
+assert_absent "$HOME_A/projects/rich/fleet.json" "no file may be written under projects/ through .."
+pass "an output path that traverses into the projects root is refused"
+
+# --- an unbounded clone read is refused rather than run unguarded -----------
+# `timeout 0` and the perl fallback's `alarm 0` both DISABLE the deadline, so a
+# non-positive bound must never reach the clone reads.
+for bad in 0 -1 soon; do
+  set +e
+  OUT=$(PATH="$FAKEBIN_A:$PATH" FM_HOME="$HOME_A" FM_SNAPSHOT_NOW="$NOW" \
+    FM_FLEET_FEED_CLONE_TIMEOUT="$bad" "$FEED" --stdout 2>&1)
+  CODE=$?
+  set -e
+  expect_code 2 "$CODE" "a clone read timeout of '$bad'"
+  assert_contains "$OUT" "FM_FLEET_FEED_CLONE_TIMEOUT" "the refusal should name the variable"
+done
+pass "a clone read timeout that would not bound anything is refused"
 
 # --- malformed sources fail loudly, and never leave a partial feed ----------
 # <label> <expected fragment> <mutation applied to a throwaway copy of home A>
