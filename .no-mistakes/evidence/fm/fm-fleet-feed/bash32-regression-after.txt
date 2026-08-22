@@ -1,0 +1,9 @@
+### AFTER the fix - interpreter /bin/bash 3.2.57, CI PATH
+ok - the document carries a 1.x contract version, the observation time and unique ids
+ok - a fully populated project carries every field this home has evidence for
+ok - the feed carries no absolute local path into a rendered card
+ok - a PR raised by a still-running worker is not presented as finished work
+...
+ok - a duplicate registry entry is refused
+ok - fm-fleet-feed
+ok_count=29 (CI job asserts 29)  exit=0

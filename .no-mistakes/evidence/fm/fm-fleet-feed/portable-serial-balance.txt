@@ -1,0 +1,7 @@
+Projected portable-serial shard load from the refreshed hints in bin/fm-test-run.sh
+(CI job cap for tests-portable-serial is now 20 minutes)
+portable-serial-1of4:  28 scripts, projected   10.8 min
+portable-serial-2of4:  27 scripts, projected   10.8 min
+portable-serial-3of4:  30 scripts, projected   10.8 min
+portable-serial-4of4:  28 scripts, projected   10.8 min
+whole serial remainder: 43.2 min over 113 scripts

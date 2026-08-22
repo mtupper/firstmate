@@ -1,0 +1,17 @@
+$ FM_HOME=/Users/mtupper/dgh/firstmate bin/fm-fleet-feed.sh --out "$EVIDENCE/fleet-feed-live.json"
+/Users/mtupper/.no-mistakes/evidence/01M0N9WDSF96F3KDMN86R2CQZ1/fleet-feed-live.json: 10 projects - 7 active, 3 dormant (active window: 14 days, since 2026-08-08)
+
+$ ls -l fleet-feed-live.json   # atomic write, mode 0600
+-rw-------@ 1 mtupper  staff  28228 Aug 22 13:59 fleet-feed-live.json
+
+$ jq -r '.projects[] | "\(.status)  \(.health)  \(.id): \(.headline)"' fleet-feed-live.json
+active  blocked  firstmate: fm-feed-fidelity is recorded in flight, but its worker is no longer running.
+active  blocked  marketing-content: mc-prd is recorded in flight, but its worker is no longer running.
+active  on-track  dotfiles: 2 items are queued and nothing is dispatched; dotfiles-acpx landed 2026-08-21.
+active  on-track  brand-scout: 1 item is queued and nothing is dispatched.
+active  on-track  dashboard: Nothing is open. dash-four-state landed 2026-08-22.
+active  on-track  afol: Nothing is open. afol-aws-followups landed 2026-08-21.
+active  on-track  lavish-axi: Nothing is open. lavish-theme-upstream-watch landed 2026-08-21.
+dormant  not-started  afol-app:  [archived: superseded by afol, 17 Aug 2026] - ARCHIVED 2026-08-17, read-only on GitHub. Superseded by afol; kept as a local reference for its route map
+dormant  not-started  afol-genius:  [archived: superseded by afol, 17 Aug 2026] - ARCHIVED 2026-08-17, read-only on GitHub. Superseded by afol
+dormant  not-started  afol-www:  [archived: superseded by afol, 17 Aug 2026] - ARCHIVED 2026-08-17, read-only on GitHub. Superseded by afol; kept as a local reference for its theme and type choices

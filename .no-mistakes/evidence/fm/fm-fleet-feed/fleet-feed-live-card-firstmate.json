@@ -1,0 +1,185 @@
+{
+  "id": "firstmate",
+  "name": "firstmate",
+  "status": "active",
+  "health": "blocked",
+  "headline": "fm-feed-fidelity is recorded in flight, but its worker is no longer running.",
+  "updatedAt": "2026-08-22",
+  "repo": "github.com/mtupper/firstmate",
+  "executiveSummary": {
+    "lede": "firstmate has 16 items recorded: 2 in flight, 11 queued, 3 landed. 2 decisions wait on the captain. 10 things are stopping progress. Last activity 2026-08-22.",
+    "metrics": [
+      {
+        "label": "In flight",
+        "value": "2",
+        "tone": "bad"
+      },
+      {
+        "label": "Queued",
+        "value": "11",
+        "tone": "neutral"
+      },
+      {
+        "label": "Landed",
+        "value": "3",
+        "tone": "good"
+      },
+      {
+        "label": "Captain decisions",
+        "value": "2",
+        "tone": "warn"
+      },
+      {
+        "label": "Stopping progress",
+        "value": "10",
+        "tone": "bad"
+      },
+      {
+        "label": "Last activity",
+        "value": "2026-08-22",
+        "tone": "neutral"
+      }
+    ]
+  },
+  "currentStatus": {
+    "summary": "fm-feed-fidelity is recorded in flight, but its worker is no longer running.",
+    "since": "held since 2026-08-20",
+    "signals": [
+      {
+        "label": "Dispatched work",
+        "value": "2 items in flight, worker no longer running",
+        "state": "bad",
+        "evidence": "Task records: fm-feed-fidelity, fm-fleet-feed."
+      },
+      {
+        "label": "Decisions waiting on the captain",
+        "value": "2 open",
+        "state": "bad",
+        "evidence": "Held items: fm-fleet-feed."
+      },
+      {
+        "label": "Items waiting on other work",
+        "value": "7 items gated",
+        "state": "watch",
+        "evidence": "Waiting on dotfiles-nomistakes-noci, fm-feed-fidelity, fm-fleet-feed."
+      },
+      {
+        "label": "Local copy",
+        "value": "main, clean",
+        "state": "good",
+        "evidence": "dgh/firstmate"
+      },
+      {
+        "label": "Project registry",
+        "value": "not registered",
+        "state": "watch",
+        "evidence": "Named by backlog items or live task records but absent from data/projects.md."
+      }
+    ]
+  },
+  "decisions": [
+    {
+      "question": "Generate the dashboard's fleet feed from live firstmate state?",
+      "why": "CAPTAIN DECIDED 2026-08-21: leave PR 2 unmerged until the no-mistakes defect is fixed upstream. Full record in data/decisions/2026-08-21-fleet-decisions-round1.md. Work is complete at 74b0967 on fm/fm-fleet-feed",
+      "owner": "captain",
+      "urgency": "now"
+    },
+    {
+      "question": "Should https://github.com/mtupper/firstmate/pull/2 land?",
+      "owner": "captain",
+      "urgency": "later"
+    }
+  ],
+  "blockers": [
+    {
+      "title": "the worker on fm-feed-fidelity is no longer running",
+      "detail": "Its run reported itself failed while the item is still recorded in flight.",
+      "severity": "critical",
+      "owner": "agents",
+      "unblockedBy": "Restarting the work or returning the item to the queue."
+    },
+    {
+      "title": "the worker on fm-fleet-feed is no longer running",
+      "detail": "Its run reported itself failed while the item is still recorded in flight.",
+      "severity": "critical",
+      "owner": "agents",
+      "unblockedBy": "Restarting the work or returning the item to the queue."
+    },
+    {
+      "title": "Generate the dashboard's fleet feed from live firstmate state",
+      "detail": "CAPTAIN DECIDED 2026-08-21: leave PR 2 unmerged until the no-mistakes defect is fixed upstream. Full record in data/decisions/2026-08-21-fleet-decisions-round1.md. Work is complete at 74b0967 on fm/fm-fleet-feed",
+      "severity": "critical",
+      "owner": "captain",
+      "since": "2026-08-20",
+      "unblockedBy": "The captain answering this hold."
+    },
+    {
+      "title": "Add real CI to the repos that have none, so no-CI stops being a delivery dead end",
+      "detail": "Waiting on dotfiles-nomistakes-noci.",
+      "severity": "major",
+      "owner": "agents",
+      "since": "2026-08-20",
+      "unblockedBy": "dotfiles-nomistakes-noci landing first."
+    },
+    {
+      "title": "A declared pause re-alerts every few minutes instead of hourly",
+      "detail": "Waiting on fm-fleet-feed.",
+      "severity": "major",
+      "owner": "agents",
+      "since": "2026-08-20",
+      "unblockedBy": "fm-fleet-feed landing first."
+    },
+    {
+      "title": "Name the repository we can actually push to, not just origin",
+      "detail": "Waiting on fm-feed-fidelity.",
+      "severity": "major",
+      "owner": "agents",
+      "since": "2026-08-21",
+      "unblockedBy": "fm-feed-fidelity landing first."
+    },
+    {
+      "title": "Keep internal record paths out of the captain-facing headline",
+      "detail": "Waiting on fm-feed-fidelity.",
+      "severity": "major",
+      "owner": "agents",
+      "since": "2026-08-21",
+      "unblockedBy": "fm-feed-fidelity landing first."
+    },
+    {
+      "title": "Declare and emit the four project states",
+      "detail": "Waiting on fm-feed-fidelity.",
+      "severity": "major",
+      "owner": "agents",
+      "since": "2026-08-21",
+      "unblockedBy": "fm-feed-fidelity landing first."
+    }
+  ],
+  "captainTasks": [
+    {
+      "title": "Decide on https://github.com/mtupper/firstmate/pull/2"
+    },
+    {
+      "title": "Generate the dashboard's fleet feed from live firstmate state",
+      "detail": "CAPTAIN DECIDED 2026-08-21: leave PR 2 unmerged until the no-mistakes defect is fixed upstream. Full record in data/decisions/2026-08-21-fleet-decisions-round1.md. Work is complete at 74b0967 on fm/fm-fleet-feed",
+      "why": "Work on fm-fleet-feed is stopped until this is answered."
+    }
+  ],
+  "agentTasks": [
+    {
+      "title": "Close the GitLab gaps in the merge and backlog paths",
+      "detail": "Surfaced 2026-08-19 while merging brand-scout MR 2 on the captain's explicit word. Two tools refuse GitLab, so a GitLab merge cannot follow the same recorded path a GitHub one does: 1. bin/fm-pr-merge.sh parses GitLab URLs but refuses any p",
+      "why": "Queued at priority 2 with nothing gating it."
+    },
+    {
+      "title": "Fix the kimi harness test that fails when kimi is actually installed",
+      "detail": "Surfaced 2026-08-19 by the fm-path-spelling test sweep and independently triaged by that worker as pre-existing, unrelated to the path-canonicalization change. DIAGNOSED. tests/fm-kimi-harness.test.sh exits 1 on this machine. Failing assert",
+      "why": "Queued at priority 3 with nothing gating it."
+    },
+    {
+      "title": "Retire, properly provision, or leave the MacBook's own firstmate home",
+      "detail": "Origin: fm-path-spelling Decision key: macbook-firstmate-home State: awaiting captain decision.",
+      "why": "Queued with nothing gating it."
+    }
+  ],
+  "order": 0
+}

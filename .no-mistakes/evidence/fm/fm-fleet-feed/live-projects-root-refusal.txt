@@ -1,0 +1,7 @@
+$ FM_HOME=/Users/mtupper/dgh/firstmate bin/fm-fleet-feed.sh --out $FM_HOME/projects/dashboard/fleet-feed.json
+fm-fleet-feed: refusing to write inside the projects root (/Users/mtupper/dgh/firstmate/projects); firstmate does not write to projects
+exit=2
+
+$ FM_HOME=/Users/mtupper/dgh/firstmate bin/fm-fleet-feed.sh --out $FM_HOME/data/../projects/dashboard/fleet-feed.json
+fm-fleet-feed: refusing to write inside the projects root (/Users/mtupper/dgh/firstmate/projects); firstmate does not write to projects
+exit=2

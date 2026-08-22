@@ -1,0 +1,4 @@
+### BEFORE the fix - pre-fix remote_label, interpreter /bin/bash 3.2.57, CI PATH
+ok - the document carries a 1.x contract version, the observation time and unique ids
+not ok - rich should carry its remote as a label: "github.com\\/acme/rich"
+exit=1

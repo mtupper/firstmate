@@ -1,0 +1,826 @@
+{
+  "contractVersion": "1.0.0",
+  "generatedAt": "2026-08-22T20:59:44Z",
+  "source": "firstmate home dgh/firstmate: project registry, backlog, task records and status logs",
+  "generator": "bin/fm-fleet-feed.sh over fm-fleet-snapshot.v1",
+  "projects": [
+    {
+      "id": "firstmate",
+      "name": "firstmate",
+      "status": "active",
+      "health": "blocked",
+      "headline": "fm-feed-fidelity is recorded in flight, but its worker is no longer running.",
+      "updatedAt": "2026-08-22",
+      "repo": "github.com/mtupper/firstmate",
+      "executiveSummary": {
+        "lede": "firstmate has 16 items recorded: 2 in flight, 11 queued, 3 landed. 2 decisions wait on the captain. 10 things are stopping progress. Last activity 2026-08-22.",
+        "metrics": [
+          {
+            "label": "In flight",
+            "value": "2",
+            "tone": "bad"
+          },
+          {
+            "label": "Queued",
+            "value": "11",
+            "tone": "neutral"
+          },
+          {
+            "label": "Landed",
+            "value": "3",
+            "tone": "good"
+          },
+          {
+            "label": "Captain decisions",
+            "value": "2",
+            "tone": "warn"
+          },
+          {
+            "label": "Stopping progress",
+            "value": "10",
+            "tone": "bad"
+          },
+          {
+            "label": "Last activity",
+            "value": "2026-08-22",
+            "tone": "neutral"
+          }
+        ]
+      },
+      "currentStatus": {
+        "summary": "fm-feed-fidelity is recorded in flight, but its worker is no longer running.",
+        "since": "held since 2026-08-20",
+        "signals": [
+          {
+            "label": "Dispatched work",
+            "value": "2 items in flight, worker no longer running",
+            "state": "bad",
+            "evidence": "Task records: fm-feed-fidelity, fm-fleet-feed."
+          },
+          {
+            "label": "Decisions waiting on the captain",
+            "value": "2 open",
+            "state": "bad",
+            "evidence": "Held items: fm-fleet-feed."
+          },
+          {
+            "label": "Items waiting on other work",
+            "value": "7 items gated",
+            "state": "watch",
+            "evidence": "Waiting on dotfiles-nomistakes-noci, fm-feed-fidelity, fm-fleet-feed."
+          },
+          {
+            "label": "Local copy",
+            "value": "main, clean",
+            "state": "good",
+            "evidence": "dgh/firstmate"
+          },
+          {
+            "label": "Project registry",
+            "value": "not registered",
+            "state": "watch",
+            "evidence": "Named by backlog items or live task records but absent from data/projects.md."
+          }
+        ]
+      },
+      "decisions": [
+        {
+          "question": "Generate the dashboard's fleet feed from live firstmate state?",
+          "why": "CAPTAIN DECIDED 2026-08-21: leave PR 2 unmerged until the no-mistakes defect is fixed upstream. Full record in data/decisions/2026-08-21-fleet-decisions-round1.md. Work is complete at 74b0967 on fm/fm-fleet-feed",
+          "owner": "captain",
+          "urgency": "now"
+        },
+        {
+          "question": "Should https://github.com/mtupper/firstmate/pull/2 land?",
+          "owner": "captain",
+          "urgency": "later"
+        }
+      ],
+      "blockers": [
+        {
+          "title": "the worker on fm-feed-fidelity is no longer running",
+          "detail": "Its run reported itself failed while the item is still recorded in flight.",
+          "severity": "critical",
+          "owner": "agents",
+          "unblockedBy": "Restarting the work or returning the item to the queue."
+        },
+        {
+          "title": "the worker on fm-fleet-feed is no longer running",
+          "detail": "Its run reported itself failed while the item is still recorded in flight.",
+          "severity": "critical",
+          "owner": "agents",
+          "unblockedBy": "Restarting the work or returning the item to the queue."
+        },
+        {
+          "title": "Generate the dashboard's fleet feed from live firstmate state",
+          "detail": "CAPTAIN DECIDED 2026-08-21: leave PR 2 unmerged until the no-mistakes defect is fixed upstream. Full record in data/decisions/2026-08-21-fleet-decisions-round1.md. Work is complete at 74b0967 on fm/fm-fleet-feed",
+          "severity": "critical",
+          "owner": "captain",
+          "since": "2026-08-20",
+          "unblockedBy": "The captain answering this hold."
+        },
+        {
+          "title": "Add real CI to the repos that have none, so no-CI stops being a delivery dead end",
+          "detail": "Waiting on dotfiles-nomistakes-noci.",
+          "severity": "major",
+          "owner": "agents",
+          "since": "2026-08-20",
+          "unblockedBy": "dotfiles-nomistakes-noci landing first."
+        },
+        {
+          "title": "A declared pause re-alerts every few minutes instead of hourly",
+          "detail": "Waiting on fm-fleet-feed.",
+          "severity": "major",
+          "owner": "agents",
+          "since": "2026-08-20",
+          "unblockedBy": "fm-fleet-feed landing first."
+        },
+        {
+          "title": "Name the repository we can actually push to, not just origin",
+          "detail": "Waiting on fm-feed-fidelity.",
+          "severity": "major",
+          "owner": "agents",
+          "since": "2026-08-21",
+          "unblockedBy": "fm-feed-fidelity landing first."
+        },
+        {
+          "title": "Keep internal record paths out of the captain-facing headline",
+          "detail": "Waiting on fm-feed-fidelity.",
+          "severity": "major",
+          "owner": "agents",
+          "since": "2026-08-21",
+          "unblockedBy": "fm-feed-fidelity landing first."
+        },
+        {
+          "title": "Declare and emit the four project states",
+          "detail": "Waiting on fm-feed-fidelity.",
+          "severity": "major",
+          "owner": "agents",
+          "since": "2026-08-21",
+          "unblockedBy": "fm-feed-fidelity landing first."
+        }
+      ],
+      "captainTasks": [
+        {
+          "title": "Decide on https://github.com/mtupper/firstmate/pull/2"
+        },
+        {
+          "title": "Generate the dashboard's fleet feed from live firstmate state",
+          "detail": "CAPTAIN DECIDED 2026-08-21: leave PR 2 unmerged until the no-mistakes defect is fixed upstream. Full record in data/decisions/2026-08-21-fleet-decisions-round1.md. Work is complete at 74b0967 on fm/fm-fleet-feed",
+          "why": "Work on fm-fleet-feed is stopped until this is answered."
+        }
+      ],
+      "agentTasks": [
+        {
+          "title": "Close the GitLab gaps in the merge and backlog paths",
+          "detail": "Surfaced 2026-08-19 while merging brand-scout MR 2 on the captain's explicit word. Two tools refuse GitLab, so a GitLab merge cannot follow the same recorded path a GitHub one does: 1. bin/fm-pr-merge.sh parses GitLab URLs but refuses any p",
+          "why": "Queued at priority 2 with nothing gating it."
+        },
+        {
+          "title": "Fix the kimi harness test that fails when kimi is actually installed",
+          "detail": "Surfaced 2026-08-19 by the fm-path-spelling test sweep and independently triaged by that worker as pre-existing, unrelated to the path-canonicalization change. DIAGNOSED. tests/fm-kimi-harness.test.sh exits 1 on this machine. Failing assert",
+          "why": "Queued at priority 3 with nothing gating it."
+        },
+        {
+          "title": "Retire, properly provision, or leave the MacBook's own firstmate home",
+          "detail": "Origin: fm-path-spelling Decision key: macbook-firstmate-home State: awaiting captain decision.",
+          "why": "Queued with nothing gating it."
+        }
+      ],
+      "order": 0
+    },
+    {
+      "id": "marketing-content",
+      "name": "marketing-content",
+      "status": "active",
+      "health": "blocked",
+      "headline": "mc-prd is recorded in flight, but its worker is no longer running.",
+      "updatedAt": "2026-08-17",
+      "repo": "gitlab.com/mtupper/marketing-content",
+      "executiveSummary": {
+        "lede": "marketing-content has 4 items recorded: 1 in flight, 3 queued, 0 landed. 1 decision waits on the captain. 2 things are stopping progress. Last activity 2026-08-17.",
+        "metrics": [
+          {
+            "label": "In flight",
+            "value": "1",
+            "tone": "bad"
+          },
+          {
+            "label": "Queued",
+            "value": "3",
+            "tone": "neutral"
+          },
+          {
+            "label": "Landed",
+            "value": "0",
+            "tone": "good"
+          },
+          {
+            "label": "Captain decisions",
+            "value": "1",
+            "tone": "warn"
+          },
+          {
+            "label": "Stopping progress",
+            "value": "2",
+            "tone": "bad"
+          },
+          {
+            "label": "Last activity",
+            "value": "2026-08-17",
+            "tone": "neutral"
+          }
+        ]
+      },
+      "currentStatus": {
+        "summary": "mc-prd is recorded in flight, but its worker is no longer running. Registered delivery posture: no-mistakes-prod-only, autonomy off.",
+        "since": "held since 2026-08-17",
+        "signals": [
+          {
+            "label": "Dispatched work",
+            "value": "1 item in flight, worker no longer running",
+            "state": "bad",
+            "evidence": "Task records: mc-prd."
+          },
+          {
+            "label": "Decisions waiting on the captain",
+            "value": "1 open",
+            "state": "bad",
+            "evidence": "Held items: mc-prd."
+          },
+          {
+            "label": "Items waiting on other work",
+            "value": "none gated",
+            "state": "good"
+          },
+          {
+            "label": "Local copy",
+            "value": "dev, clean",
+            "state": "good",
+            "evidence": "projects/marketing-content"
+          }
+        ]
+      },
+      "decisions": [
+        {
+          "question": "PRD for the Marjin content generation pipeline?",
+          "why": "PRD v3 on MR !1 https://gitlab.com/mtupper/marketing-content/-/merge_requests/1",
+          "owner": "captain",
+          "urgency": "now"
+        }
+      ],
+      "blockers": [
+        {
+          "title": "the worker on mc-prd is no longer running",
+          "detail": "The item is recorded in flight and its endpoint is gone, so nothing is left running it.",
+          "severity": "critical",
+          "owner": "agents",
+          "unblockedBy": "Restarting the work or returning the item to the queue."
+        },
+        {
+          "title": "PRD for the Marjin content generation pipeline",
+          "detail": "PRD v3 on MR !1 https://gitlab.com/mtupper/marketing-content/-/merge_requests/1",
+          "severity": "critical",
+          "owner": "captain",
+          "since": "2026-08-17",
+          "unblockedBy": "The captain answering this hold."
+        }
+      ],
+      "captainTasks": [
+        {
+          "title": "PRD for the Marjin content generation pipeline",
+          "detail": "PRD v3 on MR !1 https://gitlab.com/mtupper/marketing-content/-/merge_requests/1",
+          "why": "Work on mc-prd is stopped until this is answered."
+        }
+      ],
+      "agentTasks": [
+        {
+          "title": "Replace the 'frame 300 pixel-identical to frame 0' acceptance test",
+          "detail": "Origin: mc-composite-scout Decision key: loop-closure-acceptance State: awaiting captain decision.",
+          "why": "Queued with nothing gating it."
+        },
+        {
+          "title": "Pick and fund the live-action generator, and provide the credential",
+          "detail": "Origin: mc-composite-scout Decision key: live-action-generator-choice State: awaiting captain decision.",
+          "why": "Queued with nothing gating it."
+        },
+        {
+          "title": "Decide how a device screen appears in generated live action",
+          "detail": "Origin: mc-composite-scout Decision key: generated-device-screen-policy State: awaiting captain decision.",
+          "why": "Queued with nothing gating it."
+        }
+      ],
+      "order": 1
+    },
+    {
+      "id": "dotfiles",
+      "name": "dotfiles",
+      "status": "active",
+      "health": "on-track",
+      "headline": "2 items are queued and nothing is dispatched; dotfiles-acpx landed 2026-08-21.",
+      "updatedAt": "2026-08-21",
+      "repo": "github.com/mtupper/dotfiles",
+      "executiveSummary": {
+        "lede": "dotfiles has 3 items recorded: 0 in flight, 2 queued, 1 landed. No decision waits on the captain. Nothing is stopping progress. Last activity 2026-08-21.",
+        "metrics": [
+          {
+            "label": "In flight",
+            "value": "0",
+            "tone": "neutral"
+          },
+          {
+            "label": "Queued",
+            "value": "2",
+            "tone": "neutral"
+          },
+          {
+            "label": "Landed",
+            "value": "1",
+            "tone": "good"
+          },
+          {
+            "label": "Captain decisions",
+            "value": "0",
+            "tone": "good"
+          },
+          {
+            "label": "Stopping progress",
+            "value": "0",
+            "tone": "good"
+          },
+          {
+            "label": "Last activity",
+            "value": "2026-08-21",
+            "tone": "neutral"
+          }
+        ]
+      },
+      "currentStatus": {
+        "summary": "2 items are queued and nothing is dispatched; dotfiles-acpx landed 2026-08-21. Registered delivery posture: no-mistakes-prod-only, autonomy off.",
+        "signals": [
+          {
+            "label": "Dispatched work",
+            "value": "nothing dispatched",
+            "state": "watch"
+          },
+          {
+            "label": "Decisions waiting on the captain",
+            "value": "none open",
+            "state": "good"
+          },
+          {
+            "label": "Items waiting on other work",
+            "value": "none gated",
+            "state": "good"
+          },
+          {
+            "label": "Local copy",
+            "value": "dev, clean",
+            "state": "good",
+            "evidence": "projects/dotfiles"
+          }
+        ]
+      },
+      "decisions": [],
+      "blockers": [],
+      "captainTasks": [],
+      "agentTasks": [
+        {
+          "title": "Bring uv under the dotfiles pinning discipline",
+          "detail": "uv 0.12.5 and uvx sit in ~/.local/bin, unmanaged by nix and absent from the dotfiles repo, so they are outside the captain's pinned-and-verified rule. brand-scout now depends on uv, so this stops being cosmetic. Also worth noting: the Phase",
+          "why": "Queued at priority 2 with nothing gating it."
+        },
+        {
+          "title": "Move the AWS sso-session config into dotfiles so both machines get it",
+          "detail": "Captain authorized starting this on 2026-08-21 via the fleet decision surface. Move the afol sso-session and profile configuration from the mini's ~/.aws/config into the dotfiles repo so the MacBook gets it too. Remember the live copy nix r",
+          "why": "Queued with nothing gating it."
+        }
+      ],
+      "order": 2
+    },
+    {
+      "id": "brand-scout",
+      "name": "brand-scout",
+      "status": "active",
+      "health": "on-track",
+      "headline": "1 item is queued and nothing is dispatched.",
+      "updatedAt": "2026-08-17",
+      "repo": "gitlab.com/mtupper/brand-scout",
+      "executiveSummary": {
+        "lede": "brand-scout has 1 item recorded: 0 in flight, 1 queued, 0 landed. No decision waits on the captain. Nothing is stopping progress. Last activity 2026-08-17.",
+        "metrics": [
+          {
+            "label": "In flight",
+            "value": "0",
+            "tone": "neutral"
+          },
+          {
+            "label": "Queued",
+            "value": "1",
+            "tone": "neutral"
+          },
+          {
+            "label": "Landed",
+            "value": "0",
+            "tone": "good"
+          },
+          {
+            "label": "Captain decisions",
+            "value": "0",
+            "tone": "good"
+          },
+          {
+            "label": "Stopping progress",
+            "value": "0",
+            "tone": "good"
+          },
+          {
+            "label": "Last activity",
+            "value": "2026-08-17",
+            "tone": "neutral"
+          }
+        ]
+      },
+      "currentStatus": {
+        "summary": "1 item is queued and nothing is dispatched. Registered delivery posture: no-mistakes-prod-only, autonomy off.",
+        "signals": [
+          {
+            "label": "Dispatched work",
+            "value": "nothing dispatched",
+            "state": "watch"
+          },
+          {
+            "label": "Decisions waiting on the captain",
+            "value": "none open",
+            "state": "good"
+          },
+          {
+            "label": "Items waiting on other work",
+            "value": "none gated",
+            "state": "good"
+          },
+          {
+            "label": "Local copy",
+            "value": "dev, clean",
+            "state": "good",
+            "evidence": "projects/brand-scout"
+          }
+        ]
+      },
+      "decisions": [],
+      "blockers": [],
+      "captainTasks": [],
+      "agentTasks": [
+        {
+          "title": "Add GitLab CI to brand-scout when the plan calls for it",
+          "detail": "brand-scout has no .gitlab-ci.yml and no pipelines. This is deliberate: DOCS/DEVELOPMENT_PLAN.md Phase 0 says 'uv project, ruff, pytest, CI-free for now'. Consequence surfaced 2026-08-17: the delivery pipeline's 'checks green' return point ",
+          "why": "Queued at priority 3 with nothing gating it."
+        }
+      ],
+      "order": 3
+    },
+    {
+      "id": "dashboard",
+      "name": "dashboard",
+      "status": "active",
+      "health": "on-track",
+      "headline": "Nothing is open. dash-four-state landed 2026-08-22.",
+      "updatedAt": "2026-08-22",
+      "repo": "github.com/mtupper/dashboard",
+      "executiveSummary": {
+        "lede": "dashboard has 4 items recorded: 0 in flight, 0 queued, 4 landed. No decision waits on the captain. Nothing is stopping progress. Last activity 2026-08-22.",
+        "metrics": [
+          {
+            "label": "In flight",
+            "value": "0",
+            "tone": "neutral"
+          },
+          {
+            "label": "Queued",
+            "value": "0",
+            "tone": "neutral"
+          },
+          {
+            "label": "Landed",
+            "value": "4",
+            "tone": "good"
+          },
+          {
+            "label": "Captain decisions",
+            "value": "0",
+            "tone": "good"
+          },
+          {
+            "label": "Stopping progress",
+            "value": "0",
+            "tone": "good"
+          },
+          {
+            "label": "Last activity",
+            "value": "2026-08-22",
+            "tone": "neutral"
+          }
+        ]
+      },
+      "currentStatus": {
+        "summary": "Nothing is open. dash-four-state landed 2026-08-22. Registered delivery posture: no-mistakes-prod-only, autonomy off.",
+        "signals": [
+          {
+            "label": "Dispatched work",
+            "value": "nothing dispatched",
+            "state": "good"
+          },
+          {
+            "label": "Decisions waiting on the captain",
+            "value": "none open",
+            "state": "good"
+          },
+          {
+            "label": "Items waiting on other work",
+            "value": "none gated",
+            "state": "good"
+          },
+          {
+            "label": "Local copy",
+            "value": "dev, clean",
+            "state": "good",
+            "evidence": "projects/dashboard"
+          }
+        ]
+      },
+      "decisions": [],
+      "blockers": [],
+      "captainTasks": [],
+      "agentTasks": [],
+      "order": 4
+    },
+    {
+      "id": "afol",
+      "name": "afol",
+      "status": "active",
+      "health": "on-track",
+      "headline": "Nothing is open. afol-aws-followups landed 2026-08-21.",
+      "updatedAt": "2026-08-21",
+      "repo": "github.com/mtupper/afol",
+      "executiveSummary": {
+        "lede": "afol has 1 item recorded: 0 in flight, 0 queued, 1 landed. No decision waits on the captain. Nothing is stopping progress. Last activity 2026-08-21.",
+        "metrics": [
+          {
+            "label": "In flight",
+            "value": "0",
+            "tone": "neutral"
+          },
+          {
+            "label": "Queued",
+            "value": "0",
+            "tone": "neutral"
+          },
+          {
+            "label": "Landed",
+            "value": "1",
+            "tone": "good"
+          },
+          {
+            "label": "Captain decisions",
+            "value": "0",
+            "tone": "good"
+          },
+          {
+            "label": "Stopping progress",
+            "value": "0",
+            "tone": "good"
+          },
+          {
+            "label": "Last activity",
+            "value": "2026-08-21",
+            "tone": "neutral"
+          }
+        ]
+      },
+      "currentStatus": {
+        "summary": "Nothing is open. afol-aws-followups landed 2026-08-21. Registered delivery posture: no-mistakes-prod-only, autonomy off.",
+        "signals": [
+          {
+            "label": "Dispatched work",
+            "value": "nothing dispatched",
+            "state": "good"
+          },
+          {
+            "label": "Decisions waiting on the captain",
+            "value": "none open",
+            "state": "good"
+          },
+          {
+            "label": "Items waiting on other work",
+            "value": "none gated",
+            "state": "good"
+          },
+          {
+            "label": "Local copy",
+            "value": "dev, clean",
+            "state": "good",
+            "evidence": "projects/afol"
+          }
+        ]
+      },
+      "decisions": [],
+      "blockers": [],
+      "captainTasks": [],
+      "agentTasks": [],
+      "order": 5
+    },
+    {
+      "id": "lavish-axi",
+      "name": "lavish-axi",
+      "status": "active",
+      "health": "on-track",
+      "headline": "Nothing is open. lavish-theme-upstream-watch landed 2026-08-21.",
+      "updatedAt": "2026-08-21",
+      "repo": "github.com/kunchenguid/lavish-axi",
+      "executiveSummary": {
+        "lede": "lavish-axi has 1 item recorded: 0 in flight, 0 queued, 1 landed. No decision waits on the captain. Nothing is stopping progress. Last activity 2026-08-21.",
+        "metrics": [
+          {
+            "label": "In flight",
+            "value": "0",
+            "tone": "neutral"
+          },
+          {
+            "label": "Queued",
+            "value": "0",
+            "tone": "neutral"
+          },
+          {
+            "label": "Landed",
+            "value": "1",
+            "tone": "good"
+          },
+          {
+            "label": "Captain decisions",
+            "value": "0",
+            "tone": "good"
+          },
+          {
+            "label": "Stopping progress",
+            "value": "0",
+            "tone": "good"
+          },
+          {
+            "label": "Last activity",
+            "value": "2026-08-21",
+            "tone": "neutral"
+          }
+        ]
+      },
+      "currentStatus": {
+        "summary": "Nothing is open. lavish-theme-upstream-watch landed 2026-08-21. Registered delivery posture: local-only, autonomy off.",
+        "signals": [
+          {
+            "label": "Dispatched work",
+            "value": "nothing dispatched",
+            "state": "good",
+            "evidence": "Task records: lavish-theme."
+          },
+          {
+            "label": "Decisions waiting on the captain",
+            "value": "none open",
+            "state": "good"
+          },
+          {
+            "label": "Items waiting on other work",
+            "value": "none gated",
+            "state": "good"
+          },
+          {
+            "label": "Local copy",
+            "value": "main, clean",
+            "state": "good",
+            "evidence": "projects/lavish-axi"
+          }
+        ]
+      },
+      "decisions": [],
+      "blockers": [],
+      "captainTasks": [],
+      "agentTasks": [],
+      "order": 6
+    },
+    {
+      "id": "afol-app",
+      "name": "afol-app",
+      "status": "dormant",
+      "health": "not-started",
+      "headline": " [archived: superseded by afol, 17 Aug 2026] - ARCHIVED 2026-08-17, read-only on GitHub. Superseded by afol; kept as a local reference for its route map",
+      "repo": "github.com/mtupper/afol-app",
+      "currentStatus": {
+        "summary": " [archived: superseded by afol, 17 Aug 2026] - ARCHIVED 2026-08-17, read-only on GitHub. Superseded by afol; kept as a local reference for its route map Registered delivery posture: local-only, autonomy off.",
+        "signals": [
+          {
+            "label": "Dispatched work",
+            "value": "nothing dispatched",
+            "state": "good"
+          },
+          {
+            "label": "Decisions waiting on the captain",
+            "value": "none open",
+            "state": "good"
+          },
+          {
+            "label": "Items waiting on other work",
+            "value": "none gated",
+            "state": "good"
+          },
+          {
+            "label": "Local copy",
+            "value": "main, clean",
+            "state": "good",
+            "evidence": "projects/afol-app"
+          }
+        ]
+      },
+      "decisions": [],
+      "blockers": [],
+      "captainTasks": [],
+      "agentTasks": [],
+      "order": 0
+    },
+    {
+      "id": "afol-genius",
+      "name": "afol-genius",
+      "status": "dormant",
+      "health": "not-started",
+      "headline": " [archived: superseded by afol, 17 Aug 2026] - ARCHIVED 2026-08-17, read-only on GitHub. Superseded by afol",
+      "repo": "github.com/mtupper/afol-genius",
+      "currentStatus": {
+        "summary": " [archived: superseded by afol, 17 Aug 2026] - ARCHIVED 2026-08-17, read-only on GitHub. Superseded by afol Registered delivery posture: local-only, autonomy off.",
+        "signals": [
+          {
+            "label": "Dispatched work",
+            "value": "nothing dispatched",
+            "state": "good"
+          },
+          {
+            "label": "Decisions waiting on the captain",
+            "value": "none open",
+            "state": "good"
+          },
+          {
+            "label": "Items waiting on other work",
+            "value": "none gated",
+            "state": "good"
+          },
+          {
+            "label": "Local copy",
+            "value": "master, clean",
+            "state": "good",
+            "evidence": "projects/afol-genius"
+          }
+        ]
+      },
+      "decisions": [],
+      "blockers": [],
+      "captainTasks": [],
+      "agentTasks": [],
+      "order": 1
+    },
+    {
+      "id": "afol-www",
+      "name": "afol-www",
+      "status": "dormant",
+      "health": "not-started",
+      "headline": " [archived: superseded by afol, 17 Aug 2026] - ARCHIVED 2026-08-17, read-only on GitHub. Superseded by afol; kept as a local reference for its theme and type choices",
+      "repo": "github.com/mtupper/afol-www",
+      "currentStatus": {
+        "summary": " [archived: superseded by afol, 17 Aug 2026] - ARCHIVED 2026-08-17, read-only on GitHub. Superseded by afol; kept as a local reference for its theme and type choices Registered delivery posture: local-only, autonomy off.",
+        "signals": [
+          {
+            "label": "Dispatched work",
+            "value": "nothing dispatched",
+            "state": "good"
+          },
+          {
+            "label": "Decisions waiting on the captain",
+            "value": "none open",
+            "state": "good"
+          },
+          {
+            "label": "Items waiting on other work",
+            "value": "none gated",
+            "state": "good"
+          },
+          {
+            "label": "Local copy",
+            "value": "main, clean",
+            "state": "good",
+            "evidence": "projects/afol-www"
+          }
+        ]
+      },
+      "decisions": [],
+      "blockers": [],
+      "captainTasks": [],
+      "agentTasks": [],
+      "order": 2
+    }
+  ]
+}
