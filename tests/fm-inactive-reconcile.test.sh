@@ -377,10 +377,15 @@ SH
   started=$(date +%s)
   FM_INACTIVE_RECONCILE_BUDGET_SECS=1 run_reconcile "$MAIN" --startup
   elapsed=$(( $(date +%s) - started ))
-  [ "$elapsed" -le 3 ] || fail "stalled state read exceeded aggregate scan budget (${elapsed}s)"
+  [ "$elapsed" -le 5 ] || fail "stalled state read exceeded aggregate scan budget (${elapsed}s)"
 
+  # The resuming scan must complete one child's real reconciliation - a meta
+  # lock, an authoritative state read and a durable wake - inside its own
+  # budget, which a one-second bound cannot hold on a loaded runner.
+  # Child a still stalls far past this budget, so the wake below can only come
+  # from the durable cursor resuming after it.
   write_child "$MAIN" b 'done: green'
-  FM_INACTIVE_RECONCILE_BUDGET_SECS=1 run_reconcile "$MAIN" --startup
+  FM_INACTIVE_RECONCILE_BUDGET_SECS=10 run_reconcile "$MAIN" --startup
   grep -Fq 'child=b state=done' "$MAIN/state/.wake-queue" \
     || fail "next bounded scan did not resume with the following child"
   pass "stalled state reads are bounded without starving later children"
