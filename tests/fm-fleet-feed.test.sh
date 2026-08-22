@@ -283,6 +283,8 @@ cat > "$HOME_C/data/projects.md" <<'EOF'
 - busy [local-only] - A running worker and only old recorded dates (added 2026-05-01)
 - landing [local-only] - A finished pull request waiting on the captain (added 2026-07-01)
 - parked [local-only] - A live worker parked at a gate with a pull request open (added 2026-07-01)
+- adhoc [local-only] - A crew with a pull request and no backlog row at all (added 2026-07-01)
+- requeued [local-only] - A queued row whose pull request is still open (added 2026-07-01)
 - crowded [local-only] - More open holds than the display cap (added 2026-07-01)
 EOF
 
@@ -296,6 +298,7 @@ cat > "$HOME_C/data/backlog.md" <<'EOF'
 
 ## Queued
 - [ ] busy-next - Add the busy thing (repo: busy) (kind: ship) (since 2026-05-01)
+- [ ] requeued-ship - Ship the requeued thing (repo: requeued) (kind: ship) (since 2026-07-06)
 EOF
 
 # Twelve captain holds and nine gated items, both over the eight-item display cap.
@@ -308,7 +311,7 @@ for i in 1 2 3 4 5 6 7 8 9; do
     "$i" "$i" "$i" >> "$HOME_C/data/backlog.md"
 done
 
-for p in quiet gone halted busy landing parked; do
+for p in quiet gone halted busy landing parked adhoc requeued; do
   make_clone "$HOME_C" "$p" "https://github.com/acme/$p.git"
 done
 
@@ -359,6 +362,26 @@ record_claude_state "$HOME_C/state" parked-ship idle
 printf 'needs-decision [key=fmt]: which format should the exporter write\n' \
   > "$HOME_C/state/parked-ship.status"
 
+# A pull request on work that nothing records in flight: one crew with no
+# backlog row at all, and one whose row sits in Queued.
+fm_write_meta "$HOME_C/state/adhoc-probe.meta" \
+  "window=firstmate:fm-adhoc-probe" \
+  "worktree=$HOME_C/projects/adhoc" "project=$HOME_C/projects/adhoc" \
+  "harness=claude" "kind=ship" "mode=no-mistakes" \
+  "pr=https://github.com/acme/adhoc/pull/5"
+record_claude_state "$HOME_C/state" adhoc-probe idle
+printf 'needs-decision [key=api]: which endpoint should it call\n' \
+  > "$HOME_C/state/adhoc-probe.status"
+
+fm_write_meta "$HOME_C/state/requeued-ship.meta" \
+  "window=firstmate:fm-requeued-ship" \
+  "worktree=$HOME_C/projects/requeued" "project=$HOME_C/projects/requeued" \
+  "harness=claude" "kind=ship" "mode=no-mistakes" \
+  "pr=https://github.com/acme/requeued/pull/6"
+record_claude_state "$HOME_C/state" requeued-ship idle
+printf 'needs-decision [key=scope]: how wide should the change go\n' \
+  > "$HOME_C/state/requeued-ship.status"
+
 FEED_C=$(run "$HOME_C" "$FAKEBIN_C" --stdout) || fail "generating the home-c feed failed"
 
 Q=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "quiet")')
@@ -391,6 +414,8 @@ printf '%s' "$QD" | jq -e '.value == "1 item in flight, worker state not reporte
   || fail "an unreported worker state should be reported as unreported: $(printf '%s' "$QD" | jq -c '.value')"
 printf '%s' "$QD" | jq -e '.evidence | contains("quiet-ship")' >/dev/null \
   || fail "the evidence should still list the task record behind the value"
+printf '%s' "$QD" | jq -e '.state == "unknown"' >/dev/null \
+  || fail "a signal whose value says the state is not reported may not read green: $(printf '%s' "$QD" | jq -c '{value,state}')"
 pass "the dispatched-work value never denies a worker its own evidence lists"
 
 B=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "busy")')
@@ -440,18 +465,89 @@ printf '%s' "$L" | jq -e '.headline | contains("has finished, but the backlog st
   || fail "the headline should state the drift: $(printf '%s' "$L" | jq -c '.headline')"
 pass "a finished run with a stale backlog row is drift, not a vanished worker"
 
+# --- a card may not deny the decision it is asking the captain to make -------
+printf '%s' "$L" | jq -e '.decisions | length == 1' >/dev/null \
+  || fail "the open pull request is a decision waiting on the captain: $(printf '%s' "$L" | jq -c '.decisions')"
+printf '%s' "$L" | jq -e '.decisions[0].question == "Should https://github.com/acme/landing/pull/3 land?"' >/dev/null \
+  || fail "the decision should be the one captainTasks names: $(printf '%s' "$L" | jq -c '.decisions[0]')"
+printf '%s' "$L" | jq -e '[.executiveSummary.metrics[] | select(.label == "Captain decisions")][0].value == "1"' >/dev/null \
+  || fail "the metric must count the decision the card is asking for"
+printf '%s' "$L" | jq -e '[.currentStatus.signals[] | select(.label == "Decisions waiting on the captain")][0].value == "1 open"' >/dev/null \
+  || fail "the signal must count the decision the card is asking for"
+printf '%s' "$L" | jq -e '.executiveSummary.lede | contains("No decision waits on the captain") | not' >/dev/null \
+  || fail "the lede must not deny a decision the same card asks for: $(printf '%s' "$L" | jq -c '.executiveSummary.lede')"
+pass "a card never denies the decision its own captainTasks asks the captain to make"
+
+# --- a pull request on work that nothing records in flight ------------------
+AD=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "adhoc")')
+printf '%s' "$AD" | jq -e '.captainTasks[0].title == "Decide on https://github.com/acme/adhoc/pull/5"' >/dev/null \
+  || fail "a crew with no backlog row should still reach the captain: $(printf '%s' "$AD" | jq -c '.captainTasks')"
+printf '%s' "$AD" | jq -e '.captainTasks[0] | has("why") | not' >/dev/null \
+  || fail "nothing records this in flight, so the card must not say it is: $(printf '%s' "$AD" | jq -c '.captainTasks[0]')"
+RQ=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "requeued")')
+printf '%s' "$RQ" | jq -e '.captainTasks[0].title == "Decide on https://github.com/acme/requeued/pull/6"' >/dev/null \
+  || fail "a queued row with an open pull request should still reach the captain: $(printf '%s' "$RQ" | jq -c '.captainTasks')"
+printf '%s' "$RQ" | jq -e '.captainTasks[0] | has("why") | not' >/dev/null \
+  || fail "a queued row is not in flight, so the card must not say it is: $(printf '%s' "$RQ" | jq -c '.captainTasks[0]')"
+printf '%s' "$FEED_C" | jq -e '[.projects[].captainTasks[]?.why // ""] | any(contains("recorded in flight")) | not' >/dev/null \
+  || fail "no captain task may assert a recorded state that nothing records"
+pass "an open pull request claims nothing about where the work is recorded"
+
 # --- a parked worker is a live worker ---------------------------------------
 P=$(printf '%s' "$FEED_C" | jq '.projects[] | select(.id == "parked")')
 printf '%s' "$P" | jq -e '.captainTasks[0].title == "Decide on https://github.com/acme/parked/pull/7"' >/dev/null \
   || fail "an open pull request should still reach the captain: $(printf '%s' "$P" | jq -c '.captainTasks')"
-printf '%s' "$P" | jq -e '.captainTasks[0].why | contains("no worker is running") | not' >/dev/null \
-  || fail "a parked worker is running; the card must not say otherwise: $(printf '%s' "$P" | jq -c '.captainTasks[0].why')"
+printf '%s' "$P" | jq -e '.captainTasks[0] | has("why") | not' >/dev/null \
+  || fail "a parked worker is running; the card must claim nothing about it: $(printf '%s' "$P" | jq -c '.captainTasks[0]')"
 printf '%s' "$P" | jq -e '[.blockers[] | select(.title | contains("no longer running"))] | length == 0' >/dev/null \
   || fail "a parked worker must not be reported as gone"
 printf '%s' "$P" | jq -e '[.currentStatus.signals[] | select(.label == "Dispatched work")][0].value
                           | contains("no worker") | not' >/dev/null \
   || fail "the dispatched-work value must not deny a parked worker"
 pass "a parked worker with an open pull request is never described as absent"
+
+# --- a clone read that never completed claims nothing about the working tree -
+# `git diff --quiet` answering 124 is the bound being hit (bin/fm-timeout-lib.sh),
+# not a verdict, so the Local copy signal must say less rather than assert a
+# working-tree state it never saw.
+STALL_DIR="$TMP_ROOT/stalled-diff"
+mkdir -p "$STALL_DIR"
+FAKEBIN_STALL=$(make_fakebin "$STALL_DIR")
+REAL_GIT=$(command -v git)
+cat > "$FAKEBIN_STALL/git" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+  [ "\$a" = diff ] && exit 124
+done
+exec $REAL_GIT "\$@"
+SH
+chmod +x "$FAKEBIN_STALL/git"
+
+FEED_STALL=$(run "$HOME_A" "$FAKEBIN_STALL" --stdout) \
+  || fail "generating the feed with a stalled diff read failed"
+SL=$(printf '%s' "$FEED_STALL" | jq '.projects[] | select(.id == "rich")
+                                    | [.currentStatus.signals[] | select(.label == "Local copy")][0]')
+printf '%s' "$SL" | jq -e '.value | contains("uncommitted changes") | not' >/dev/null \
+  || fail "a read that hit its bound must not assert uncommitted changes: $(printf '%s' "$SL" | jq -c '.')"
+printf '%s' "$SL" | jq -e '.value == "could not be read" and .state == "unknown"' >/dev/null \
+  || fail "an incomplete read should report itself unread: $(printf '%s' "$SL" | jq -c '{value,state}')"
+pass "a clone read that hit its bound claims nothing about the working tree"
+
+# --- ties sort by name, as the ordering comment says ------------------------
+HOME_D=$(new_home home-d)
+cat > "$HOME_D/data/projects.md" <<'EOF'
+# Projects
+
+- gamma [local-only] - Registered, nothing recorded (added 2026-07-01)
+- alpha [local-only] - Registered, nothing recorded (added 2026-07-01)
+- beta [local-only] - Registered, nothing recorded (added 2026-07-01)
+EOF
+
+FEED_D=$(run "$HOME_D" "$FAKEBIN_A" --stdout) || fail "generating the home-d feed failed"
+printf '%s' "$FEED_D" | jq -e '[.projects[] | select(.status == "dormant")]
+                               | sort_by(.order) | map(.id) == ["alpha", "beta", "gamma"]' >/dev/null \
+  || fail "projects tied on rank and date should be ordered by name: $(printf '%s' "$FEED_D" | jq -c '[.projects[] | {id, order}]')"
+pass "projects tied on evidence and date are ordered by name, not against it"
 
 # --- firstmate never writes into a project ----------------------------------
 GOOD="$TMP_ROOT/good-feed.json"

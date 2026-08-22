@@ -210,7 +210,7 @@ remote_label() {  # <url>
 }
 
 clone_facts_json() {  # <project-name...>
-  local name path url branch dirty acc='[]'
+  local name path url branch dirty diff_rc read_state acc='[]'
   for name in "$@"; do
     path=$(clone_path "$name")
     if [ -z "$path" ]; then
@@ -220,20 +220,29 @@ clone_facts_json() {  # <project-name...>
     fi
     url=$(fm_run_timed "$CLONE_READ_TIMEOUT" git -C "$path" remote get-url origin 2>/dev/null) || url=
     branch=$(fm_run_timed "$CLONE_READ_TIMEOUT" git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=
-    if fm_run_timed "$CLONE_READ_TIMEOUT" git -C "$path" diff --quiet HEAD -- >/dev/null 2>&1; then
-      dirty=false
-    else
-      dirty=true
-    fi
+    # `git diff --quiet` answers 0 for clean and 1 for dirty; anything else -
+    # 124 for the bound being hit (bin/fm-timeout-lib.sh), or a git error - is
+    # not an answer, so the read reports itself unreadable rather than claiming
+    # a working-tree state it never saw.
+    diff_rc=0
+    fm_run_timed "$CLONE_READ_TIMEOUT" git -C "$path" diff --quiet HEAD -- >/dev/null 2>&1 \
+      || diff_rc=$?
+    case "$diff_rc" in
+      0) dirty=false ;;
+      1) dirty=true ;;
+      *) dirty=null ;;
+    esac
     [ -n "$branch" ] || dirty=null
+    if [ -n "$branch" ] && [ "$dirty" != null ]; then read_state=ok; else read_state=unreadable; fi
     acc=$(jq -n --argjson acc "$acc" \
       --arg name "$name" \
       --arg path "$path" \
       --arg repo "$(if [ -n "$url" ]; then remote_label "$url"; fi)" \
       --arg branch "$branch" \
+      --arg read "$read_state" \
       --argjson dirty "${dirty:-null}" \
       '$acc + [{name:$name,
-                read:(if $branch == "" then "unreadable" else "ok" end),
+                read:$read,
                 path:$path,
                 repo:(if $repo == "" then null else $repo end),
                 branch:(if $branch == "" then null else $branch end),
@@ -434,6 +443,10 @@ def run_finished: (.current_state.state == "done");
            why: ("A worker on \(.task) is parked until this is answered." | trunc(400)),
            owner: "captain",
            urgency: "now"}
+      ] + [ $open_prs[]
+        | {question: ("Should \(.pr.url) land?" | trunc(199)),
+           owner: "captain",
+           urgency: (if run_finished then "soon" else "later" end)}
       ]
       | sort_by(if .urgency == "now" then 0 elif .urgency == "soon" then 1 else 2 end))
       as $decisions_all
@@ -494,10 +507,7 @@ def run_finished: (.current_state.state == "done");
         | {title: ("Decide on \(.pr.url)" | trunc(160)),
            why: ((if run_finished
                   then "The work is finished and waiting for the captain to say whether it lands."
-                  elif worker_gone
-                  then "Its worker is no longer running and the pull request is still open."
-                  else "A pull request is open while the item is still recorded in flight."
-                  end) | trunc(300))}
+                  else null end) | trunc(300))}
       ] + [ $captain_holds[] | select(.state == "in_flight")
         | {title: (.title | trunc(160)),
            detail: (.hold_reason | trunc(400)),
@@ -535,6 +545,8 @@ def run_finished: (.current_state.state == "done");
                  end | trunc(120)),
          state: (if ($stopped | length) > 0 or ($orphaned | length) > 0 then "bad"
                  elif ($working | length) > 0 then "good"
+                 elif ($inflight | length) > 0 and ($tasks | length) > 0 and ($drifted | length) == 0
+                   then "unknown"
                  elif ($queued | length) > 0 then "watch"
                  else "good" end),
          evidence: (if ($tasks | length) > 0
@@ -627,10 +639,12 @@ def run_finished: (.current_state.state == "done");
 # Order within each section: strongest live evidence first, then most recent
 # activity, then name. `order` is per-section, so both start at 0.
 | ([$all[] | select(.status == "active")]
-   | group_by(.rank) | map(sort_by([(.last_date // ""), .name]) | reverse) | add // []
+   | group_by(.rank)
+   | map(sort_by(.name) | group_by(.last_date // "") | reverse | add // []) | add // []
    | to_entries | map(.value + {order: .key})) as $active
 | ([$all[] | select(.status == "dormant")]
-   | group_by(.rank) | map(sort_by([(.last_date // ""), .name]) | reverse) | add // []
+   | group_by(.rank)
+   | map(sort_by(.name) | group_by(.last_date // "") | reverse | add // []) | add // []
    | to_entries | map(.value + {order: .key})) as $dormant
 
 | {problems: [],
