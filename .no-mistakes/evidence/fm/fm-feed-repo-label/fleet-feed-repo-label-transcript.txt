@@ -1,0 +1,15 @@
+$ git -C projects/lavish-axi remote -v   # the live clone shape
+fork	git@github.com:mtupper/lavish-axi.git (fetch)
+fork	git@github.com:mtupper/lavish-axi.git (push)
+origin	https://github.com/kunchenguid/lavish-axi.git (fetch)
+origin	DISABLED-no-push-to-upstream (push)
+
+$ fm-fleet-feed.sh --stdout | jq ".projects[] | {id, repo}"
+{
+  "id": "lavish-axi",
+  "repo": "github.com/mtupper/lavish-axi"
+}
+{
+  "id": "marjin",
+  "repo": "github.com/mtupper/marjin"
+}
