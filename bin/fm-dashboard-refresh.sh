@@ -181,6 +181,8 @@ git -C "$BUILD" checkout --force --quiet --detach FETCH_HEAD \
   || die "the feed failed the dashboard's own contract check; the published page is untouched"
 
 # --- 4. build the self-contained page ---------------------------------------
+rm -rf "$BUILD/.output" \
+  || die "cannot clear the previous build output at $BUILD/.output"
 (cd "$BUILD" && FLEET_DATA="$FEED" pnpm build) \
   || die "the dashboard build failed; the published page is untouched"
 PAGE="$BUILD/.output/public/index.html"

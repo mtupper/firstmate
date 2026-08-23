@@ -3,9 +3,10 @@
 #
 # Covers the full manual path with a fake pnpm standing in for the dashboard's
 # toolchain: a first publish, a second publish that keeps the previous page
-# recoverable, a failed generation and a failed build each leaving the served
-# page untouched, the overlap lock refusing a live holder and reclaiming a dead
-# one, the projects-root and build-checkout publish refusals, and the project
+# recoverable, a failed generation, a failed build, and an empty build each
+# leaving the served page untouched, the overlap lock refusing a live holder
+# and reclaiming a dead one, the projects-root and build-checkout publish
+# refusals, and the project
 # clone staying byte-for-byte untouched throughout.
 set -u
 
@@ -32,7 +33,8 @@ fm_git_identity
 # makes: install is a no-op, data:check demands a readable feed, and build
 # writes a page that embeds the feed FLEET_DATA points at plus a per-run nonce,
 # so two builds never collide byte-for-byte. FM_FAKE_PNPM_FAIL_BUILD simulates
-# a broken build.
+# a broken build; FM_FAKE_PNPM_EMPTY_BUILD simulates a build that exits 0
+# without writing a page.
 make_fakebin() {  # <dir>
   local fb
   fb=$(fm_fakebin "$1")
@@ -51,6 +53,7 @@ case "$cmd" in
     [ -n "${FLEET_DATA:-}" ] || { echo "fake pnpm: FLEET_DATA unset" >&2; exit 1; }
     [ -s "$FLEET_DATA" ] || { echo "fake pnpm: FLEET_DATA missing" >&2; exit 1; }
     [ -n "${FM_FAKE_PNPM_FAIL_BUILD:-}" ] && { echo "fake pnpm: build broken" >&2; exit 1; }
+    [ -n "${FM_FAKE_PNPM_EMPTY_BUILD:-}" ] && exit 0
     mkdir -p .output/public
     { printf 'STANDALONE %s%s\n' "$$" "$RANDOM"; cat "$FLEET_DATA"; } > .output/public/index.html
     exit 0 ;;
@@ -139,6 +142,20 @@ printf '%s' "$OUT" | grep -q 'published page is untouched' \
   || fail "a failed build should say the page is untouched: $OUT"
 [ "$(cat "$PAGE")" = "$SECOND" ] || fail "a failed build replaced the published page"
 pass "a failed build leaves the published page alone"
+
+# --- an empty build is refused, not papered over by stale output -------------
+# The build checkout keeps its gitignored .output/ across runs, so an earlier
+# successful build can leave a page there. Seed such a leftover, then drive a
+# build that exits 0 without writing a new page: the no-page guard must still
+# fail instead of republishing the stale page.
+mkdir -p "$HOME_A/data/dashboard-build/build/.output/public"
+printf 'STALE PAGE FROM AN EARLIER RUN\n' \
+  > "$HOME_A/data/dashboard-build/build/.output/public/index.html"
+OUT=$(FM_FAKE_PNPM_EMPTY_BUILD=1 run 2>&1) && fail "the refresh must fail when the build writes no page"
+printf '%s' "$OUT" | grep -q 'produced no page' \
+  || fail "an empty build should be reported as producing no page: $OUT"
+[ "$(cat "$PAGE")" = "$SECOND" ] || fail "an empty build replaced the published page"
+pass "an empty build is refused even when stale output survives from a previous run"
 
 # --- overlapping runs: a live holder refuses, a dead one never blocks --------
 # The lock is the flock on data/dashboard-build/.lock named in the script's
