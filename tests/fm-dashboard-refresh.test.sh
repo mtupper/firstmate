@@ -169,7 +169,40 @@ printf '%s' "$OUT" | grep -q 'projects root' \
 OUT=$(run --publish-dir "$HOME_A/data/dashboard-build/build/served" 2>&1)
 STATUS=$?
 [ "$STATUS" -eq 2 ] || fail "publishing into the build checkout should be refused with exit 2, got $STATUS: $OUT"
-pass "a publish dir inside the projects root or the build checkout is refused"
+OUT=$(run --publish-dir 2>&1)
+STATUS=$?
+[ "$STATUS" -eq 2 ] || fail "--publish-dir with no value should die with exit 2, not fall back silently, got $STATUS: $OUT"
+OUT=$(run --publish-dir '' 2>&1)
+STATUS=$?
+[ "$STATUS" -eq 2 ] || fail "--publish-dir with an empty value should die with exit 2, got $STATUS: $OUT"
+pass "a publish dir inside the projects root or the build checkout, or an empty one, is refused"
+
+# --- a reused checkout follows the clone selected this run -------------------
+fm_git_init_commit "$HOME_A/projects/dash2"
+printf '{"name": "second-dashboard"}\n' > "$HOME_A/projects/dash2/package.json"
+git -C "$HOME_A/projects/dash2" add package.json
+git -C "$HOME_A/projects/dash2" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+  commit -qm 'add package.json'
+DASH2_HEAD=$(git -C "$HOME_A/projects/dash2" rev-parse HEAD)
+PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_A" FM_SNAPSHOT_NOW="$NOW" \
+  "$REFRESH" --project dash2 >/dev/null 2>&1 \
+  || fail "refreshing against a second project failed"
+[ "$(git -C "$HOME_A/data/dashboard-build/build" rev-parse HEAD)" = "$DASH2_HEAD" ] \
+  || fail "a reused build checkout still built the previously selected project"
+pass "a reused build checkout is re-pointed at the clone selected this run"
+
+# --- a leftover untracked file cannot wedge the disposable checkout ----------
+printf 'leftover from a broken run\n' > "$HOME_A/data/dashboard-build/build/newfile.txt"
+printf 'the committed version\n' > "$HOME_A/projects/dash/newfile.txt"
+git -C "$HOME_A/projects/dash" add newfile.txt
+git -C "$HOME_A/projects/dash" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+  commit -qm 'add newfile.txt'
+CLONE_HEAD=$(git -C "$HOME_A/projects/dash" rev-parse HEAD)
+run >/dev/null 2>&1 \
+  || fail "a colliding untracked leftover wedged the disposable build checkout"
+[ "$(cat "$HOME_A/data/dashboard-build/build/newfile.txt")" = "the committed version" ] \
+  || fail "the checkout kept the leftover instead of the committed file"
+pass "a colliding untracked leftover is discarded, keeping the checkout disposable"
 
 # --- the project clone is read, never written --------------------------------
 [ -z "$(git -C "$HOME_A/projects/dash" status --porcelain)" ] \
@@ -178,8 +211,9 @@ pass "a publish dir inside the projects root or the build checkout is refused"
   || fail "the project clone's HEAD moved"
 # Nothing may stage fleet content in the build checkout either: the feed is
 # passed by path from outside it, so its tracked tree stays clean.
-[ -z "$(git -C "$HOME_A/data/dashboard-build/build" status --porcelain | grep -v '^??')" ] \
-  || fail "the build checkout has tracked changes; fleet content could be committed"
+if git -C "$HOME_A/data/dashboard-build/build" status --porcelain | grep -v '^??' | grep -q .; then
+  fail "the build checkout has tracked changes; fleet content could be committed"
+fi
 pass "the project clone stays untouched and the build checkout stays clean"
 
 echo "all fm-dashboard-refresh tests passed"

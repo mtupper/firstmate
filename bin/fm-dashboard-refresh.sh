@@ -68,10 +68,11 @@ usage() {
 
 PROJECT=dashboard
 PUBLISH_DIR=
+PUBLISH_DIR_GIVEN=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --publish-dir) shift; PUBLISH_DIR=${1:-} ;;
-    --publish-dir=*) PUBLISH_DIR=${1#--publish-dir=} ;;
+    --publish-dir) shift; PUBLISH_DIR=${1:-}; PUBLISH_DIR_GIVEN=1 ;;
+    --publish-dir=*) PUBLISH_DIR=${1#--publish-dir=}; PUBLISH_DIR_GIVEN=1 ;;
     --project) shift; PROJECT=${1:-} ;;
     --project=*) PROJECT=${1#--project=} ;;
     -h|--help) usage; exit 0 ;;
@@ -80,6 +81,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$PROJECT" ] || die "--project needs a name" 2
+[ "$PUBLISH_DIR_GIVEN" -eq 1 ] && [ -z "$PUBLISH_DIR" ] && die "--publish-dir needs a path" 2
 [ -n "$PUBLISH_DIR" ] || PUBLISH_DIR="$DATA/dashboard-preview"
 
 command -v git >/dev/null 2>&1 || die "git not found"
@@ -130,18 +132,37 @@ mkdir -p "$WORK" || die "cannot create the work root at $WORK"
 mkdir -p "$PUBLISH_DIR" || die "cannot create the publish dir at $PUBLISH_DIR"
 
 # --- overlap guard ----------------------------------------------------------
-# mkdir is the atomic test-and-set. The pid file inside names the holder; a
-# holder that no longer runs cannot finish its publish, so its lock is stale
-# and reclaimed.
-if ! mkdir "$LOCK" 2>/dev/null; then
+# mkdir is the atomic test-and-set and the pid file inside names the holder; a
+# holder that no longer runs cannot finish its publish, so its lock is stale.
+# Reclaiming is racy by nature - two runs can both observe the same dead
+# holder - so the reclaim is an atomic rename (only one contender's mv wins)
+# and taking the lock re-reads the pid file afterwards, so a lock swept from
+# under a winner between its mkdir and its pid write is noticed as a refusal,
+# never as two concurrent runs sharing the build checkout.
+take_lock() {
+  mkdir "$LOCK" 2>/dev/null || return 1
+  printf '%s\n' "$$" > "$LOCK/pid" 2>/dev/null || return 1
+  [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ]
+}
+if ! take_lock; then
   holder=$(cat "$LOCK/pid" 2>/dev/null || true)
   if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
     die "another refresh is already running (pid $holder); let it finish" 3
   fi
-  rm -rf "$LOCK"
-  mkdir "$LOCK" 2>/dev/null || die "another refresh grabbed the lock first; let it finish" 3
+  STALE="$LOCK.stale.$$"
+  mv "$LOCK" "$STALE" 2>/dev/null \
+    || die "another refresh grabbed the lock first; let it finish" 3
+  # The moved-aside lock may belong to a contender that reclaimed and re-took
+  # it between the two reads above; a live pid inside means it was not ours to
+  # sweep, so it is put back untouched.
+  holder=$(cat "$STALE/pid" 2>/dev/null || true)
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    mv "$STALE" "$LOCK" 2>/dev/null
+    die "another refresh is already running (pid $holder); let it finish" 3
+  fi
+  rm -rf "$STALE"
+  take_lock || die "another refresh grabbed the lock first; let it finish" 3
 fi
-printf '%s\n' "$$" > "$LOCK/pid"
 trap 'rm -rf "$LOCK"' EXIT
 
 # --- 1. fresh feed from live home state -------------------------------------
@@ -156,13 +177,17 @@ if [ ! -e "$BUILD/.git" ]; then
   git clone --quiet "$CLONE" "$BUILD" \
     || die "cannot create the build checkout at $BUILD"
 fi
+# A reused checkout keeps whatever origin it was first cloned from; re-point
+# it at the clone selected THIS run, so a different --project never silently
+# builds from the previously recorded repository.
+git -C "$BUILD" remote set-url origin "$CLONE" \
+  || die "cannot point the build checkout at $CLONE"
 git -C "$BUILD" fetch --quiet origin +HEAD \
   || die "cannot read the dashboard clone's current state"
-# The checkout is disposable by declaration (see header): tracked leftovers
-# from a broken run are discarded, gitignored build caches survive.
-git -C "$BUILD" reset --hard --quiet \
-  || die "cannot clean the build checkout"
-git -C "$BUILD" checkout --quiet --detach FETCH_HEAD \
+# The checkout is disposable by declaration (see header): --force discards
+# both tracked leftovers and colliding untracked files from a broken run,
+# while gitignored build caches survive.
+git -C "$BUILD" checkout --force --quiet --detach FETCH_HEAD \
   || die "cannot check out the dashboard's current state in the build checkout"
 
 # --- 3. validate the feed with the dashboard's own checker ------------------
