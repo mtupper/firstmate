@@ -213,6 +213,37 @@ remote_label() {  # <url>
   printf '%s\n' "$u"
 }
 
+# A push URL is usable when it still names somewhere a push could go: any URL,
+# scp or local-path form qualifies. A remote whose push URL was deliberately
+# broken (e.g. set to "DISABLED-no-push-to-upstream" on a fork's upstream) has
+# none of a git URL's separators and is refused.
+push_url_usable() {  # <push-url>
+  case "$1" in
+    '') return 1 ;;
+    *://*|*:*|*/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The label names the repository this home can actually push to, because that
+# is where its work lands. Origin wins when its push URL is usable; otherwise
+# the first other remote with a usable push URL answers; and with no pushable
+# remote at all, origin's fetch URL still names where the code came from.
+pushable_remote_url() {  # <clone-path>
+  local path=$1 url remote remotes
+  url=$(fm_run_timed "$CLONE_READ_TIMEOUT" git -C "$path" remote get-url --push origin 2>/dev/null) || url=
+  if push_url_usable "$url"; then printf '%s\n' "$url"; return 0; fi
+  remotes=$(fm_run_timed "$CLONE_READ_TIMEOUT" git -C "$path" remote 2>/dev/null) || remotes=
+  while IFS= read -r remote; do
+    [ -n "$remote" ] && [ "$remote" != origin ] || continue
+    url=$(fm_run_timed "$CLONE_READ_TIMEOUT" git -C "$path" remote get-url --push "$remote" 2>/dev/null) || continue
+    if push_url_usable "$url"; then printf '%s\n' "$url"; return 0; fi
+  done <<EOF
+$remotes
+EOF
+  fm_run_timed "$CLONE_READ_TIMEOUT" git -C "$path" remote get-url origin 2>/dev/null
+}
+
 clone_facts_json() {  # <project-name...>
   local name path url branch dirty diff_rc read_state acc='[]'
   for name in "$@"; do
@@ -222,7 +253,7 @@ clone_facts_json() {  # <project-name...>
         '$acc + [{name:$name, read:"absent", repo:null, branch:null, dirty:null, path:null}]')
       continue
     fi
-    url=$(fm_run_timed "$CLONE_READ_TIMEOUT" git -C "$path" remote get-url origin 2>/dev/null) || url=
+    url=$(pushable_remote_url "$path") || url=
     branch=$(fm_run_timed "$CLONE_READ_TIMEOUT" git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=
     # `git diff --quiet` answers 0 for clean and 1 for dirty; anything else -
     # 124 for the bound being hit (bin/fm-timeout-lib.sh), or a git error - is
