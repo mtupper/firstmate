@@ -549,6 +549,44 @@ printf '%s' "$FEED_D" | jq -e '[.projects[] | select(.status == "dormant")]
   || fail "projects tied on rank and date should be ordered by name: $(printf '%s' "$FEED_D" | jq -c '[.projects[] | {id, order}]')"
 pass "projects tied on evidence and date are ordered by name, not against it"
 
+# --- internal record paths never reach a captain-facing field ---------------
+# Hold reasons and status lines are written for firstmate's own records; the
+# projection must drop the pointer and keep the decision, and truncation must
+# land on a sentence boundary, never mid-word or mid-path.
+HOME_E=$(new_home home-e)
+FAKEBIN_E=$(make_fakebin "$HOME_E")
+cat > "$HOME_E/data/projects.md" <<'EOF'
+# Projects
+
+- pointy [no-mistakes] - Fixture project with pointer-carrying records (added 2026-07-01)
+EOF
+cat > "$HOME_E/data/backlog.md" <<'EOF'
+## In flight
+- [ ] pointy-hold - Choose the export format (repo: pointy) (kind: ship) (since 2026-07-06) (hold: The captain must pick the export format. Full record in data/decisions/2026-07-06-export-format.md) (hold-kind: captain)
+- [ ] pointy-ship - Ship the pointy thing (repo: pointy) (kind: ship) (since 2026-07-07)
+EOF
+make_clone "$HOME_E" pointy 'git@github.com:acme/pointy.git'
+fm_write_meta "$HOME_E/state/pointy-ship.meta" \
+  "window=firstmate:fm-pointy-ship" \
+  "worktree=$HOME_E/projects/pointy" \
+  "project=$HOME_E/projects/pointy" \
+  "harness=claude" "kind=ship" "mode=no-mistakes"
+record_claude_state "$HOME_E/state" pointy-ship idle
+printf 'blocked [key=creds]: The deploy credential is rejected. Full trace kept in state/pointy-ship.status\n' \
+  > "$HOME_E/state/pointy-ship.status"
+
+FEED_E=$(run "$HOME_E" "$FAKEBIN_E" --stdout) || fail "generating the home-e feed failed"
+PT=$(printf '%s' "$FEED_E" | jq '.projects[] | select(.id == "pointy")')
+printf '%s' "$PT" | jq -e 'tostring | test("(^|[^a-z])(data|state)/") | not' >/dev/null \
+  || fail "no internal record path may reach a rendered card: $(printf '%s' "$PT" | jq -c '{headline, decisions, blockers}')"
+printf '%s' "$PT" | jq -e '.headline | startswith("Work has stopped: The deploy credential is rejected.")' >/dev/null \
+  || fail "the headline should keep the finding and drop the pointer: $(printf '%s' "$PT" | jq -c '.headline')"
+printf '%s' "$PT" | jq -e '.decisions[0].why == "The captain must pick the export format."' >/dev/null \
+  || fail "a hold reason should keep the decision and drop the pointer: $(printf '%s' "$PT" | jq -c '.decisions[0]')"
+printf '%s' "$PT" | jq -e '[.blockers[] | .detail // ""] | all(contains("…") | not)' >/dev/null \
+  || fail "pointer-stripped text should end on a sentence boundary, not an ellipsis: $(printf '%s' "$PT" | jq -c '.blockers')"
+pass "internal record paths are dropped before any captain-facing field"
+
 # --- firstmate never writes into a project ----------------------------------
 GOOD="$TMP_ROOT/good-feed.json"
 run "$HOME_A" "$FAKEBIN_A" --out "$GOOD" >/dev/null || fail "writing a feed to a normal path failed"
