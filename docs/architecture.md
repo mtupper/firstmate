@@ -52,6 +52,7 @@ The semantic branch reports working only on an exact busy verdict and names the 
 For whole-fleet read-only review, `bin/fm-fleet-snapshot.sh --json` emits schema `fm-fleet-snapshot.v1` from the backlog, task metadata, current crew state, endpoint probes, PR/report pointers, scout reports, bounded current summaries from registered secondmate homes, and secondmate return-channel guidance.
 `bin/fm-fleet-view.sh` renders that snapshot as Markdown for humans, `bin/fm-bearings-snapshot.sh` provides the bounded bearings projection, and `bin/fm-fleet-feed.sh` projects it, the project registry and a bounded read-only clone read onto the dashboard project's own feed contract, so every view consumes one structured contract instead of reparsing raw fleet files.
 The feed contract is owned by the dashboard repository, not by firstmate, so `bin/fm-fleet-feed.sh` obeys that schema, emits only fields this home can ground, and refuses to write a partial feed.
+The feed also folds each registered secondmate's durable work from the snapshot's bounded mate summaries into the owning project's card, merged by default with the mate named in supporting text, and discloses any mate it could not fully read; the script header owns that fold contract.
 The script header owns the exact JSON schema.
 
 ### Registered secondmate current state
