@@ -26,7 +26,7 @@
 #   $FM_HOME/data/dashboard-build/          work root
 #     build/                                dedicated dashboard checkout
 #     feed.json                             the fresh feed for this run
-#     .lock/                                overlap guard (pid inside)
+#     .lock                                 overlap guard (kernel-held flock)
 #   $FM_HOME/data/dashboard-preview/        publish dir (default)
 #     index.html                            the served page
 #     index.html.prev                       the previous page, recoverable
@@ -37,9 +37,10 @@
 # own honest generated-at timestamp in the rendered header. The previous page
 # survives each successful publish as index.html.prev.
 #
-# Overlapping runs: the second run REFUSES with the holder's pid while the
-# first is alive. A lock whose recorded pid is provably dead is reclaimed, so
-# a crashed run never wedges the trigger.
+# Overlapping runs: the second run REFUSES while the first is alive. The lock
+# is a kernel-held flock released the moment its holder exits, however it
+# exits, so a crashed run never wedges the trigger and two runs can never
+# proceed concurrently.
 #
 # Serving is not this script's job. The publish dir defaults to the location
 # already served in this home (data/dashboard-preview, e.g. by
@@ -86,6 +87,7 @@ done
 
 command -v git >/dev/null 2>&1 || die "git not found"
 command -v pnpm >/dev/null 2>&1 || die "pnpm not found; the dashboard builds with pnpm"
+command -v perl >/dev/null 2>&1 || die "perl not found; the overlap lock is taken with perl's flock"
 
 CLONE="$PROJECTS/$PROJECT"
 [ -e "$CLONE/.git" ] || die "no dashboard clone at $CLONE; clone the project first"
@@ -127,43 +129,25 @@ esac
 
 BUILD="$WORK/build"
 FEED="$WORK/feed.json"
-LOCK="$WORK/.lock"
+LOCKFILE="$WORK/.lock"
 mkdir -p "$WORK" || die "cannot create the work root at $WORK"
 mkdir -p "$PUBLISH_DIR" || die "cannot create the publish dir at $PUBLISH_DIR"
 
 # --- overlap guard ----------------------------------------------------------
-# mkdir is the atomic test-and-set and the pid file inside names the holder; a
-# holder that no longer runs cannot finish its publish, so its lock is stale.
-# Reclaiming is racy by nature - two runs can both observe the same dead
-# holder - so the reclaim is an atomic rename (only one contender's mv wins)
-# and taking the lock re-reads the pid file afterwards, so a lock swept from
-# under a winner between its mkdir and its pid write is noticed as a refusal,
-# never as two concurrent runs sharing the build checkout.
-take_lock() {
-  mkdir "$LOCK" 2>/dev/null || return 1
-  printf '%s\n' "$$" > "$LOCK/pid" 2>/dev/null || return 1
-  [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ]
-}
-if ! take_lock; then
-  holder=$(cat "$LOCK/pid" 2>/dev/null || true)
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
-    die "another refresh is already running (pid $holder); let it finish" 3
-  fi
-  STALE="$LOCK.stale.$$"
-  mv "$LOCK" "$STALE" 2>/dev/null \
-    || die "another refresh grabbed the lock first; let it finish" 3
-  # The moved-aside lock may belong to a contender that reclaimed and re-took
-  # it between the two reads above; a live pid inside means it was not ours to
-  # sweep, so it is put back untouched.
-  holder=$(cat "$STALE/pid" 2>/dev/null || true)
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
-    mv "$STALE" "$LOCK" 2>/dev/null
-    die "another refresh is already running (pid $holder); let it finish" 3
-  fi
-  rm -rf "$STALE"
-  take_lock || die "another refresh grabbed the lock first; let it finish" 3
-fi
-trap 'rm -rf "$LOCK"' EXIT
+# A kernel-held flock on a plain lock file, taken without blocking. flock(2)
+# locks the open file description; perl reaches this shell's descriptor 9 by
+# duplicating it, so the lock it takes stays held by the shell's own open
+# descriptor after perl exits, for the rest of the run. The kernel releases
+# it the moment this process exits, however it exits, so a dead holder never
+# blocks the next run and there is no pid bookkeeping, no staleness test, no
+# reclaim, and no cleanup to trap. 6 is LOCK_EX|LOCK_NB.
+exec 9>>"$LOCKFILE" || die "cannot open the lock file at $LOCKFILE"
+perl -e 'open(my $fh, ">>&=", $ARGV[0]) or exit 2; exit(flock($fh, 6) ? 0 : 3)' 9
+case $? in
+  0) ;;
+  3) die "another refresh is already running; let it finish" 3 ;;
+  *) die "cannot take the refresh lock on $LOCKFILE" ;;
+esac
 
 # --- 1. fresh feed from live home state -------------------------------------
 "$SCRIPT_DIR/fm-fleet-feed.sh" --out "$FEED" \

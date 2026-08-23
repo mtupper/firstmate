@@ -140,24 +140,31 @@ printf '%s' "$OUT" | grep -q 'published page is untouched' \
 [ "$(cat "$PAGE")" = "$SECOND" ] || fail "a failed build replaced the published page"
 pass "a failed build leaves the published page alone"
 
-# --- overlapping runs: a live holder refuses, a dead one is reclaimed --------
-LOCK="$HOME_A/data/dashboard-build/.lock"
-mkdir -p "$LOCK"
-sleep 60 &
+# --- overlapping runs: a live holder refuses, a dead one never blocks --------
+# The lock is the flock on data/dashboard-build/.lock named in the script's
+# header - part of its documented layout. A fixture holder takes it exactly as
+# the script does and keeps it while it lives; killing it must release it.
+LOCKFILE="$HOME_A/data/dashboard-build/.lock"
+perl -e 'open(my $fh, ">>", $ARGV[0]) or exit 2; flock($fh, 6) or exit 3; sleep 60' "$LOCKFILE" &
 HOLDER=$!
-printf '%s\n' "$HOLDER" > "$LOCK/pid"
+# Wait until the holder provably has the lock: a non-blocking probe stops
+# succeeding. The probe's own lock is released when the probe exits.
+tries=0
+until ! perl -e 'open(my $fh, ">>", $ARGV[0]) or exit 2; exit(flock($fh, 6) ? 0 : 1)' "$LOCKFILE"; do
+  tries=$((tries + 1))
+  [ "$tries" -lt 100 ] || fail "the fixture holder never took the lock"
+  sleep 0.1
+done
 OUT=$(run 2>&1)
 STATUS=$?
 kill "$HOLDER" 2>/dev/null
 wait "$HOLDER" 2>/dev/null
 [ "$STATUS" -eq 3 ] || fail "a live holder should be refused with exit 3, got $STATUS: $OUT"
-printf '%s' "$OUT" | grep -q "already running (pid $HOLDER)" \
-  || fail "the refusal should name the running holder: $OUT"
-[ -d "$LOCK" ] || fail "refusing must not remove the live holder's lock"
-printf '999999\n' > "$LOCK/pid"
-run >/dev/null 2>&1 || fail "a lock whose holder is dead should be reclaimed"
-[ -d "$LOCK" ] && fail "the reclaimed run left its lock behind"
-pass "an overlapping run is refused while the holder lives and reclaimed once it is dead"
+printf '%s' "$OUT" | grep -q 'already running' \
+  || fail "the refusal should say a refresh is already running: $OUT"
+# The holder is dead and the kernel has released its lock; nothing to reclaim.
+run >/dev/null 2>&1 || fail "a dead holder must not block the next refresh"
+pass "an overlapping run is refused while the holder lives and never blocked by a dead one"
 
 # --- writes are refused where they could reach a repository ------------------
 OUT=$(run --publish-dir "$HOME_A/projects/dash/served" 2>&1)
