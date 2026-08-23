@@ -271,25 +271,25 @@ pass "absent and empty are distinguished: checked reports [], unreadable omits t
 # A fork clone keeps the upstream as origin with its push URL deliberately
 # disabled; the card must name the fork the work lands on, not the upstream.
 # With no pushable remote at all, origin's fetch URL still names the source.
-HOME_D=$(new_home home-d)
-FAKEBIN_D=$(make_fakebin "$HOME_D")
-cat > "$HOME_D/data/projects.md" <<'EOF'
+HOME_F=$(new_home home-f)
+FAKEBIN_F=$(make_fakebin "$HOME_F")
+cat > "$HOME_F/data/projects.md" <<'EOF'
 # Projects
 
 - forked [direct-PR] - Fork whose upstream origin refuses pushes (added 2026-07-01)
 - unpushable [local-only] - Only a disabled push URL, nowhere to push (added 2026-07-01)
 EOF
-make_clone "$HOME_D" forked 'https://github.com/acme-upstream/forked.git'
-git -C "$HOME_D/projects/forked" remote set-url --push origin DISABLED-no-push-to-upstream
-git -C "$HOME_D/projects/forked" remote add fork 'git@github.com:acme/forked.git'
-make_clone "$HOME_D" unpushable 'https://github.com/acme-upstream/unpushable.git'
-git -C "$HOME_D/projects/unpushable" remote set-url --push origin DISABLED-no-push-to-upstream
+make_clone "$HOME_F" forked 'https://github.com/acme-upstream/forked.git'
+git -C "$HOME_F/projects/forked" remote set-url --push origin DISABLED-no-push-to-upstream
+git -C "$HOME_F/projects/forked" remote add fork 'git@github.com:acme/forked.git'
+make_clone "$HOME_F" unpushable 'https://github.com/acme-upstream/unpushable.git'
+git -C "$HOME_F/projects/unpushable" remote set-url --push origin DISABLED-no-push-to-upstream
 
-FEED_D=$(run "$HOME_D" "$FAKEBIN_D" --stdout) || fail "generating the home-d feed failed"
-printf '%s' "$FEED_D" | jq -e '.projects[] | select(.id == "forked") | .repo == "github.com/acme/forked"' >/dev/null \
-  || fail "a fork with a disabled origin push URL should be labelled by its pushable remote: $(printf '%s' "$FEED_D" | jq -c '.projects[] | select(.id == "forked") | .repo')"
-printf '%s' "$FEED_D" | jq -e '.projects[] | select(.id == "unpushable") | .repo == "github.com/acme-upstream/unpushable"' >/dev/null \
-  || fail "with no pushable remote the label should fall back to origin's fetch URL: $(printf '%s' "$FEED_D" | jq -c '.projects[] | select(.id == "unpushable") | .repo')"
+FEED_F=$(run "$HOME_F" "$FAKEBIN_F" --stdout) || fail "generating the home-f feed failed"
+printf '%s' "$FEED_F" | jq -e '.projects[] | select(.id == "forked") | .repo == "github.com/acme/forked"' >/dev/null \
+  || fail "a fork with a disabled origin push URL should be labelled by its pushable remote: $(printf '%s' "$FEED_F" | jq -c '.projects[] | select(.id == "forked") | .repo')"
+printf '%s' "$FEED_F" | jq -e '.projects[] | select(.id == "unpushable") | .repo == "github.com/acme-upstream/unpushable"' >/dev/null \
+  || fail "with no pushable remote the label should fall back to origin's fetch URL: $(printf '%s' "$FEED_F" | jq -c '.projects[] | select(.id == "unpushable") | .repo')"
 pass "the repo label names the pushable remote, with origin as the fallback"
 
 # --- home C: what "the worker stopped" may and may not be read from ---------
