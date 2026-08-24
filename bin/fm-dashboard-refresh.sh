@@ -105,8 +105,11 @@ resolve_intent() {  # <path>: physical path the target would occupy once created
   local p=$1 rest= leaf
   while [ ! -d "$p" ]; do
     leaf=$(basename "$p")
-    [ "$leaf" = .. ] && return 1
-    rest="/$leaf$rest"
+    case "$leaf" in
+      ..) return 1 ;;
+      .) ;;
+      *) rest="/$leaf$rest" ;;
+    esac
     p=$(dirname "$p")
   done
   p=$(cd "$p" 2>/dev/null && pwd -P) || return 1

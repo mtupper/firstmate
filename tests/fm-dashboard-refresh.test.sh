@@ -202,13 +202,25 @@ STATUS=$?
 OUT=$(run --publish-dir "$HOME_A/data/dashboard-build/build/served" 2>&1)
 STATUS=$?
 [ "$STATUS" -eq 2 ] || fail "publishing into the build checkout should be refused with exit 2, got $STATUS: $OUT"
+# A '.' in a not-yet-existing remainder must not slip past the lexical
+# build-checkout guard: on a home whose work root does not exist yet,
+# publishing to dashboard-build/./build must still be refused, before
+# anything is created.
+FRESH_DATA="$TMP_ROOT/fresh-data"
+mkdir -p "$FRESH_DATA"
+OUT=$(FM_DATA_OVERRIDE="$FRESH_DATA" run --publish-dir "$FRESH_DATA/dashboard-build/./build" 2>&1)
+STATUS=$?
+[ "$STATUS" -eq 2 ] || fail "a '.' publish dir into the not-yet-created build checkout should be refused with exit 2, got $STATUS: $OUT"
+printf '%s' "$OUT" | grep -q 'build checkout' \
+  || fail "the '.' build-checkout refusal should say why: $OUT"
+[ -e "$FRESH_DATA/dashboard-build" ] && fail "the refused '.' publish dir still created the work root"
 OUT=$(run --publish-dir 2>&1)
 STATUS=$?
 [ "$STATUS" -eq 2 ] || fail "--publish-dir with no value should die with exit 2, not fall back silently, got $STATUS: $OUT"
 OUT=$(run --publish-dir '' 2>&1)
 STATUS=$?
 [ "$STATUS" -eq 2 ] || fail "--publish-dir with an empty value should die with exit 2, got $STATUS: $OUT"
-pass "a publish dir that reaches the projects root or the build checkout, even via '..', or an empty one, is refused"
+pass "a publish dir that reaches the projects root or the build checkout, even via '..' or '.', or an empty one, is refused"
 
 # --- a reused checkout follows the clone selected this run -------------------
 fm_git_init_commit "$HOME_A/projects/dash2"
