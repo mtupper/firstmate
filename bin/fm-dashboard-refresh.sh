@@ -81,8 +81,18 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+# A flag where a value belongs means the intended value was never typed: the
+# next flag was consumed as the value instead. Refusing it here is the only
+# place that can tell the difference - further down it is just a relative path
+# that would resolve against the current directory.
 [ -n "$PROJECT" ] || die "--project needs a name" 2
+case "$PROJECT" in
+  -*) die "--project needs a name; got the flag $PROJECT" 2 ;;
+esac
 [ "$PUBLISH_DIR_GIVEN" -eq 1 ] && [ -z "$PUBLISH_DIR" ] && die "--publish-dir needs a path" 2
+case "$PUBLISH_DIR" in
+  -*) die "--publish-dir needs a path; got the flag $PUBLISH_DIR" 2 ;;
+esac
 [ -n "$PUBLISH_DIR" ] || PUBLISH_DIR="$DATA/dashboard-preview"
 
 command -v git >/dev/null 2>&1 || die "git not found"
@@ -123,13 +133,13 @@ physical_dir() {  # <existing dir>: the path the filesystem itself stores for it
 resolve_intent() {  # <path>: physical path the target would occupy once created
   local p=$1 rest='' leaf
   while [ ! -d "$p" ]; do
-    leaf=$(basename "$p")
+    leaf=$(basename -- "$p") || return 1
     case "$leaf" in
       ..) return 1 ;;
       .) ;;
       *) rest="/$leaf$rest" ;;
     esac
-    p=$(dirname "$p")
+    p=$(dirname -- "$p") || return 1
   done
   p=$(physical_dir "$p") || return 1
   printf '%s%s\n' "${p%/}" "$rest"
@@ -214,9 +224,11 @@ git -C "$BUILD" checkout --force --quiet --detach FETCH_HEAD \
   || die "cannot check out the dashboard's current state in the build checkout"
 
 # --- 3. validate the feed with the dashboard's own checker ------------------
-(cd "$BUILD" \
-  && pnpm install --frozen-lockfile --prefer-offline \
-  && pnpm data:check "$FEED") \
+# The install is guarded separately from the check it enables, so a toolchain
+# or lockfile problem is never reported as a fault in the feed.
+(cd "$BUILD" && pnpm install --frozen-lockfile --prefer-offline) \
+  || die "cannot install the dashboard's dependencies in the build checkout; the published page is untouched"
+(cd "$BUILD" && pnpm data:check "$FEED") \
   || die "the feed failed the dashboard's own contract check; the published page is untouched"
 
 # --- 4. build the self-contained page ---------------------------------------

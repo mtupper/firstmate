@@ -7,9 +7,10 @@
 # leaving the served page untouched, a failed publish leaving no staged page
 # behind, the overlap lock refusing a live holder
 # and reclaiming a dead one, the projects-root and build-checkout publish
-# refusals including the case-aliased spellings of both, the refusal of a build
-# checkout that resolves into the clone, and the project clone staying
-# byte-for-byte untouched throughout.
+# refusals including the case-aliased spellings of both, the refusal of a
+# publish dir that swallowed the next flag, the refusal of a build checkout
+# that resolves into the clone, and the project clone staying byte-for-byte
+# untouched throughout.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -36,7 +37,8 @@ fm_git_identity
 # writes a page that embeds the feed FLEET_DATA points at plus a per-run nonce,
 # so two builds never collide byte-for-byte. FM_FAKE_PNPM_FAIL_BUILD simulates
 # a broken build; FM_FAKE_PNPM_EMPTY_BUILD simulates a build that exits 0
-# without writing a page.
+# without writing a page; FM_FAKE_PNPM_FAIL_INSTALL simulates a toolchain or
+# lockfile problem that stops the install before any feed is looked at.
 make_fakebin() {  # <dir>
   local fb
   fb=$(fm_fakebin "$1")
@@ -46,7 +48,9 @@ make_fakebin() {  # <dir>
 cmd=${1:-}
 shift || true
 case "$cmd" in
-  install) exit 0 ;;
+  install)
+    [ -n "${FM_FAKE_PNPM_FAIL_INSTALL:-}" ] && { echo "fake pnpm: lockfile drifted" >&2; exit 1; }
+    exit 0 ;;
   data:check)
     [ -s "${1:-}" ] || { echo "fake pnpm: no feed at ${1:-<none>}" >&2; exit 1; }
     grep -q '"contractVersion"' "$1" || { echo "fake pnpm: not a feed" >&2; exit 1; }
@@ -144,6 +148,21 @@ printf '%s' "$OUT" | grep -q 'published page is untouched' \
   || fail "a failed build should say the page is untouched: $OUT"
 [ "$(cat "$PAGE")" = "$SECOND" ] || fail "a failed build replaced the published page"
 pass "a failed build leaves the published page alone"
+
+# --- a failed dependency install is not blamed on the feed -------------------
+# The install and the contract check run in the same step, but they fail for
+# unrelated reasons: reporting a lockfile or toolchain problem as a feed
+# contract failure sends the captain to debug a feed that is fine.
+OUT=$(FM_FAKE_PNPM_FAIL_INSTALL=1 run 2>&1) \
+  && fail "the refresh must fail when the dashboard's dependencies cannot be installed"
+printf '%s' "$OUT" | grep -q 'contract check' \
+  && fail "a failed install must not be reported as a feed contract failure: $OUT"
+printf '%s' "$OUT" | grep -q 'dependencies' \
+  || fail "a failed install should say the dependencies could not be installed: $OUT"
+printf '%s' "$OUT" | grep -q 'published page is untouched' \
+  || fail "a failed install should say the page is untouched: $OUT"
+[ "$(cat "$PAGE")" = "$SECOND" ] || fail "a failed install replaced the published page"
+pass "a failed dependency install is reported as such, not as a feed contract failure"
 
 # --- an empty build is refused, not papered over by stale output -------------
 # The build checkout keeps its gitignored .output/ across runs, so an earlier
@@ -246,6 +265,20 @@ STATUS=$?
 OUT=$(run --publish-dir '' 2>&1)
 STATUS=$?
 [ "$STATUS" -eq 2 ] || fail "--publish-dir with an empty value should die with exit 2, got $STATUS: $OUT"
+# A flag where the publish dir belongs means the value was never typed and the
+# next flag was swallowed instead. It must not be taken for a relative path:
+# that resolves against the current directory and publishes the feed-bearing
+# page into whatever repository the captain happens to be standing in.
+CWD_PROBE="$TMP_ROOT/cwd-probe"
+mkdir -p "$CWD_PROBE"
+OUT=$(cd "$CWD_PROBE" && run --publish-dir --project=dash 2>&1)
+STATUS=$?
+[ "$STATUS" -eq 2 ] \
+  || fail "--publish-dir swallowing the next flag should die with exit 2, got $STATUS: $OUT"
+[ -e "$CWD_PROBE/index.html" ] \
+  && fail "the refused run published a page into the current directory"
+[ -z "$(ls -A "$CWD_PROBE")" ] \
+  || fail "the refused run left something behind in the current directory: $(ls -A "$CWD_PROBE")"
 pass "a publish dir that reaches the projects root or the build checkout, even via '..' or '.', or an empty one, is refused"
 
 # --- a case alias of an existing directory reaches neither boundary ----------
