@@ -287,7 +287,42 @@ if fm_pid_alive "$pid"; then
   fi
 fi
 
+# The watcher-exclusion lock below is a real singleton: a signal arriving
+# between claiming it and arming a cleanup trap strands it, and a stranded
+# .watch.lock then refuses every later watcher arm for the whole stale-lock
+# window. Declare the state the trap reads, then arm the trap, and only then
+# reach for the lock. Nothing here releases a lock it did not take: lock_held
+# stays 0 until fm_lock_try_acquire actually succeeds.
 lock_held=0
+watch_recovery_required=0
+MIGRATION_MARKER_TMP=
+MIGRATION_SCAN_MARKER_TMP=
+MIGRATION_LOG_TMP=
+MIGRATION_OBLIGATION_TMP=
+MIGRATION_QUARANTINE_TMP=
+MIGRATION_X_SHIM_TMP=
+migration_cleanup() {
+  fm_pr_poll_cleanup
+  [ -z "$MIGRATION_X_SHIM_TMP" ] || rm -f -- "$MIGRATION_X_SHIM_TMP"
+  [ -z "$MIGRATION_QUARANTINE_TMP" ] || rm -f -- "$MIGRATION_QUARANTINE_TMP"
+  [ -z "$MIGRATION_OBLIGATION_TMP" ] || rm -f -- "$MIGRATION_OBLIGATION_TMP"
+  [ -z "$MIGRATION_LOG_TMP" ] || rm -f -- "$MIGRATION_LOG_TMP"
+  [ -z "$MIGRATION_MARKER_TMP" ] || rm -f -- "$MIGRATION_MARKER_TMP"
+  [ -z "$MIGRATION_SCAN_MARKER_TMP" ] || rm -f -- "$MIGRATION_SCAN_MARKER_TMP"
+  if [ "$lock_held" -eq 1 ] && [ "$watch_recovery_required" -eq 1 ]; then
+    fm_recovery_transition "$STATE/.watcher-down" release-lock "$WATCH_LOCK" downtime \
+      || echo "PR_CHECK_MIGRATION: watcher recovery state could not be persisted; retaining stale lock evidence" >&2
+  else
+    # Unconditional, because fm_lock_release releases only a lock whose recorded
+    # holder is this very process. lock_held is set after fm_lock_try_acquire
+    # returns, so a signal landing inside that call - after the pid is written
+    # but before the flag is set - would otherwise strand the watcher lock that
+    # this process really does own.
+    fm_lock_release "$WATCH_LOCK"
+  fi
+}
+trap migration_cleanup EXIT
+trap 'exit 1' HUP INT TERM
 i=0
 while [ "$i" -lt 100 ]; do
   if fm_lock_try_acquire "$WATCH_LOCK"; then
@@ -308,36 +343,9 @@ if [ "$lock_held" -ne 1 ]; then
   echo "PR_CHECK_MIGRATION: watcher exclusion could not be acquired; review state/.watch.lock before rearming polls" >&2
   exit 1
 fi
-watch_recovery_required=0
 if [ "$stopped_watcher" -eq 1 ] || [ -n "${FM_LOCK_RECOVERED_PID:-}" ]; then
   watch_recovery_required=1
 fi
-
-MIGRATION_MARKER_TMP=
-MIGRATION_SCAN_MARKER_TMP=
-MIGRATION_LOG_TMP=
-MIGRATION_OBLIGATION_TMP=
-MIGRATION_QUARANTINE_TMP=
-MIGRATION_X_SHIM_TMP=
-migration_cleanup() {
-  fm_pr_poll_cleanup
-  [ -z "$MIGRATION_X_SHIM_TMP" ] || rm -f -- "$MIGRATION_X_SHIM_TMP"
-  [ -z "$MIGRATION_QUARANTINE_TMP" ] || rm -f -- "$MIGRATION_QUARANTINE_TMP"
-  [ -z "$MIGRATION_OBLIGATION_TMP" ] || rm -f -- "$MIGRATION_OBLIGATION_TMP"
-  [ -z "$MIGRATION_LOG_TMP" ] || rm -f -- "$MIGRATION_LOG_TMP"
-  [ -z "$MIGRATION_MARKER_TMP" ] || rm -f -- "$MIGRATION_MARKER_TMP"
-  [ -z "$MIGRATION_SCAN_MARKER_TMP" ] || rm -f -- "$MIGRATION_SCAN_MARKER_TMP"
-  if [ "$lock_held" -eq 1 ]; then
-    if [ "$watch_recovery_required" -eq 1 ]; then
-      fm_recovery_transition "$STATE/.watcher-down" release-lock "$WATCH_LOCK" downtime \
-        || echo "PR_CHECK_MIGRATION: watcher recovery state could not be persisted; retaining stale lock evidence" >&2
-    else
-      fm_lock_release "$WATCH_LOCK"
-    fi
-  fi
-}
-trap migration_cleanup EXIT
-trap 'exit 1' HUP INT TERM
 
 if [ ! -d "$STATE" ] || [ -L "$STATE" ]; then
   echo "PR_CHECK_MIGRATION: state directory is not a private ordinary directory; migration did not complete safely" >&2
