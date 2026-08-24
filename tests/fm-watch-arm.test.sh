@@ -28,36 +28,41 @@ TMP_ROOT=$(fm_test_tmproot fm-watch-arm-tests)
 SEED_PID=
 ARM_PID=
 
+# Quiet fixed-string match: the file may not exist yet on an early poll, which
+# is an ordinary not-yet rather than something to print on every attempt.
+file_has_text() {  # <file> <fixed-text>
+  grep -qF "$2" "$1" 2>/dev/null
+}
+
+seed_watcher_ready() {  # <state>
+  [ "$(cat "$1/.watch.lock/pid" 2>/dev/null || true)" = "$SEED_PID" ] \
+    && [ -e "$1/.last-watcher-beat" ]
+}
+
 # Start the real watcher as the singleton holder.
 start_seed_watcher() {  # <state> <fakebin> <watch-out>
-  local state=$1 fakebin=$2 out=$3 i
+  local state=$1 fakebin=$2 out=$3
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   SEED_PID=$!
-  i=0
-  while [ "$i" -lt 60 ]; do
-    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$SEED_PID" ] \
-      && [ -e "$state/.last-watcher-beat" ] && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$SEED_PID" ] \
+  fm_test_register_pid "$SEED_PID"
+  # Deadline rather than a fixed iteration count: a real watcher's startup runs
+  # a check migration and a recovery handshake before its first poll, and that
+  # stretch dilates with machine load well past any budget sized on an idle run.
+  fm_test_wait_until seed_watcher_ready "$state" \
     || fail "seed watcher did not take the lock"
 }
 
 # Attach a real arm to the live cycle.
+# Attach a real arm to the live cycle. The confirm timeout is a deliberate
+# per-case behavior parameter, not a patience budget, so it stays as passed.
 start_attached_arm() {  # <state> <fakebin> <arm-out> <confirm-timeout>
-  local state=$1 fakebin=$2 armout=$3 confirm=$4 i
+  local state=$1 fakebin=$2 armout=$3 confirm=$4
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 \
     FM_ARM_CONFIRM_TIMEOUT="$confirm" "$WATCH_ARM" > "$armout" &
   ARM_PID=$!
-  i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF "watcher: attached pid=$SEED_PID" "$armout" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  grep -qF "watcher: attached pid=$SEED_PID" "$armout" \
+  fm_test_register_pid "$ARM_PID"
+  fm_test_wait_until file_has_text "$armout" "watcher: attached pid=$SEED_PID" \
     || fail "arm did not attach to the live watcher: $(cat "$armout")"
 }
 
@@ -103,13 +108,7 @@ status_signature() {  # <status-path>
 }
 
 wait_for_file_text() {  # <file> <fixed-text>
-  local file=$1 expected=$2 i=0
-  while [ "$i" -lt 100 ]; do
-    grep -F "$expected" "$file" >/dev/null 2>&1 && return 0
-    sleep 0.05
-    i=$((i + 1))
-  done
-  return 1
+  fm_test_wait_until file_has_text "$1" "$2"
 }
 
 ack_wakes() {  # <state>
@@ -138,20 +137,24 @@ drain_ack_pair() {  # <drain-stderr>
   printf '%s\t%s\n' "$sequence" "$generation"
 }
 
+# Returns once the arm has either reported its started watcher or closed on its
+# own. Both are legitimate outcomes here, so this only establishes that the arm
+# has stopped starting up; each case decides what must happen next.
+rearm_settled() {  # <arm-out>
+  grep -q '^watcher: started ' "$1" 2>/dev/null && return 0
+  is_live_non_zombie "$ARM_PID" || return 0
+  return 1
+}
+
 start_rearm_arm() {  # <home> <state> <fakebin> <arm-out> [predecessor-arm-pid]
-  local home=$1 state=$2 fakebin=$3 armout=$4 predecessor=${5:-} i
+  local home=$1 state=$2 fakebin=$3 armout=$4 predecessor=${5:-}
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
     FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
     FM_WATCH_PREDECESSOR_ARM_PID="$predecessor" \
     "$WATCH_ARM" --restart > "$armout" &
   ARM_PID=$!
-  i=0
-  while [ "$i" -lt 80 ]; do
-    grep -q '^watcher: started ' "$armout" 2>/dev/null && return 0
-    is_live_non_zombie "$ARM_PID" || return 0
-    sleep 0.05
-    i=$((i + 1))
-  done
+  fm_test_register_pid "$ARM_PID"
+  fm_test_wait_until rearm_settled "$armout"
   return 0
 }
 
@@ -287,16 +290,20 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   append_wake "$state" check startup-network 'check: startup-network'
 
   start_rearm_arm "$home" "$state" "$fakebin" "$armout"
-  sleep 0.25
-  if is_live_non_zombie "$ARM_PID"; then
+  # The contract is that this re-arm surfaces the durable wakes and CLOSES,
+  # rather than settling into ordinary supervision. Wait for that close on a
+  # deadline instead of sampling liveness once after a fixed sleep: the arm has
+  # to start a real watcher, which recovers state and reaches its first poll,
+  # and that stretch alone outran the old quarter-second sample on any busy
+  # machine. Still-live at the deadline remains the failure this case is for.
+  status=0
+  wait_for_exit "$ARM_PID" || status=$?
+  if [ "$status" -eq 124 ]; then
     # End the fixture through an ordinary actionable status transition so this
-    # failing pre-fix path leaves no child behind.
+    # failing path leaves no child behind.
     printf 'done: fixture cleanup\n' > "$state/cleanup.status"
-    wait_for_exit "$ARM_PID" 80 || true
     fail "re-arm stayed live instead of surfacing durable wakes and the still-open remote decision"
   fi
-  wait "$ARM_PID"
-  status=$?
   expect_code 0 "$status" "re-arm re-surface wake must close successfully"
   grep -F 'check: rearm-resurface' "$armout" >/dev/null \
     || fail "re-arm did not report the durable recovery wake: $(cat "$armout")"
