@@ -28,11 +28,23 @@
 # prominent: a "Second mate" signal names the mate and its share, and folded
 # decisions, blockers and tasks name the mate in their supporting text.
 # The fold is read-only toward the mate homes and reads only what the snapshot
-# already collected. A mate that could not be read, was only partially read, or
-# predates per-item reporting is DISCLOSED with an unknown "Second mate" signal
-# on every project it serves, so a quiet card never silently hides routed work;
-# mate work that names no project at all is fatal, exactly like this home's own
-# unattributable work.
+# already collected. A mate summary reports a held in-flight item on both its
+# in-flight and its queued surface, so the fold deduplicates and counts each item
+# once, on its state, and reads that item's hold the same way this home reads its
+# own.
+#
+# Disclosure, so a quiet card never silently hides routed work. A mate that could
+# not be read leaves evidence of a home but none of work, so it is disclosed on
+# every project the fleet records it serving. A mate that was only partially read
+# is disclosed where its own rows land. A mate whose records predate per-project
+# reporting, and rows a bounded read cut off, are work this home knows exists but
+# cannot place on any project - those rows are precisely the ones whose project is
+# unknown, so they are disclosed on EVERY card rather than guessed onto a subset,
+# and an otherwise empty card says so instead of claiming nothing is recorded.
+# None of those is fatal: refusing the whole feed because one remote mate has not
+# self-updated would blind every other project's card. Only a mate reporting
+# per-project attribution and still naming no project for an item is fatal,
+# exactly like this home's own unattributable work.
 #
 # READ-ONLY toward projects. It reads clones under projects/ and writes only the
 # feed, and it REFUSES an output path inside the projects root (AGENTS.md hard
@@ -58,6 +70,8 @@
 #   - a project name that is not a valid feed id, or a duplicate registry entry
 #   - a structured backlog row with no repo, or an unattributable free-form row
 #     in the current sections (real work the feed would silently drop)
+#   - a second mate that reports per-project attribution and still names no
+#     project for an item, or a mate outside the snapshot's own read window
 #   - an output path inside the projects root
 #
 # Usage:
@@ -355,6 +369,15 @@ def worker_gone:
 # not a departure: the run declared its own completion, so the remedy is to
 # mark the item done, never to restart or requeue finished work.
 def run_finished: (.current_state.state == "done");
+# A mate summary bounds several surfaces, only four of which carry work this feed
+# folds. Truncating the other surfaces costs the feed nothing, so a disclosure
+# that fired on them would be a false alarm on an otherwise complete card.
+def work_surface: (.surface | IN("in_flight", "queued", "landed", "decisions_open"));
+# The card is read by the captain, so an omitted surface is named in the words
+# the rest of the card uses, never by its record field name.
+def surface_words:
+  {"in_flight": "in flight", "queued": "queued", "landed": "landed",
+   "decisions_open": "waiting on a decision"}[.surface] // .surface;
 
 . as $snap
 | ($names | split("\n") | map(select(. != ""))) as $names
@@ -366,6 +389,13 @@ def run_finished: (.current_state.state == "done");
 | ($snap.secondmate_current.records // []) as $mates
 | ([$mates[] | select(.provenance.selected == "structured-home")]) as $mates_read
 | ([$mates[] | select(.provenance.selected != "structured-home")]) as $mates_unread
+# A mate whose summary predates per-item project attribution reports no in_flight
+# surface at all, and none of its rows can carry a repo. Its work is DISCLOSED,
+# never folded and never fatal: refusing the whole feed because one remote mate
+# has not self-updated yet would blind every other card in the feed, which is the
+# failure this feed exists to prevent.
+| ([$mates_read[] | select(.in_flight != null)]) as $mates_folded
+| ([$mates_read[] | select(.in_flight == null)]) as $mates_blind
 
 # --- fatal source problems, collected before anything is emitted ------------
 | ([ $registry | group_by(.name)[] | select(length > 1)
@@ -378,7 +408,7 @@ def run_finished: (.current_state.state == "done");
    + (if ($snap.secondmate_current.truncated // 0) > 0
       then ["\($snap.secondmate_current.truncated) second mate(s) fall outside the snapshot window (FM_SNAPSHOT_SECONDMATES); their work would be silently invisible"]
       else [] end)
-   + ([ $mates_read[] | . as $m
+   + ([ $mates_folded[] | . as $m
         | ((.in_flight // [])[], (.queued // [])[], (.landed // [])[], (.decisions_open // [])[])
         | select((.repo // "") == "")
         | "the \($m.id) second mate records work that names no project (\(.id // "unnamed item")); the feed would silently drop that work" ]
@@ -394,44 +424,67 @@ def run_finished: (.current_state.state == "done");
    | ([$snap.backlog.records[]? | select(.structured and .repo == $name)]) as $recs
    | ([$live[] | select(proj_of == $name)]) as $tasks
 
-   # --- the work carried by this projects second mates -----------------------
+   # --- the work carried by the second mates serving this project -----------
    # Read from the structured mate records in the snapshot, never from mate chat.
-   | ([ $mates_read[] | . as $m | (.in_flight // [])[]
+   | ([ $mates_folded[] | . as $m | (.in_flight // [])[]
         | select(.repo == $name) | . + {mate:$m.id} ]) as $m_inflight
-   | ([ $mates_read[] | . as $m | (.queued // [])[]
-        | select(.repo == $name) | . + {mate:$m.id} ]) as $m_queued
-   | ([ $mates_read[] | . as $m | (.landed // [])[]
+   # A mate summary reports a HELD in-flight item on BOTH its in_flight and its
+   # queued surface, because in_flight is the state of the item while queued is
+   # its current role. Fold it once, on its state, so a single item is never
+   # counted as both in flight and queued the way rows from this home never are.
+   | ([$m_inflight[] | "\(.mate) \(.id)"]) as $m_inflight_keys
+   | ([ $mates_folded[] | . as $m | (.queued // [])[]
+        | select(.repo == $name) | . + {mate:$m.id}
+        | ("\(.mate) \(.id)") as $k
+        | select(($m_inflight_keys | index($k)) == null) ]) as $m_queued
+   | ([ $mates_folded[] | . as $m | (.landed // [])[]
         | select(.repo == $name) | . + {mate:$m.id} ]) as $m_landed
-   | ([ $mates_read[] | . as $m | (.decisions_open // [])[]
+   | ([ $mates_folded[] | . as $m | (.decisions_open // [])[]
         | select(.repo == $name) | . + {mate:$m.id} ]) as $m_dec_all
+   # The holds carried by those deduplicated in-flight rows. This home reads the
+   # same holds straight off its own in-flight rows, so read them here too rather
+   # than losing them along with the duplicate.
+   | ($m_inflight | map(select(.hold_reason != null and .hold_kind != null))) as $m_inflight_held
    | ($m_dec_all | map(select(.verb == "blocked"))) as $m_blocked
-   | ($m_dec_all | map(select(.verb != "blocked"))) as $m_decisions
+   | (($m_dec_all | map(select(.verb != "blocked")))
+      + ($m_inflight_held | map(select(.hold_kind == "captain")
+          | {id, key: .id, verb: "captain-hold", summary: .title,
+             reason: .hold_reason, mate}))) as $m_decisions
    | ($m_inflight | map(select(.child_state == "working"))) as $m_working
    # The same raised-PR rule as this home: a running worker may be mid-CI, so
    # only a not-working item with a PR is offered to the captain.
    | ([$m_inflight[] | select((.pr_url // "") != "" and .child_state != "working")]) as $m_open_prs
    | ($m_queued | map(select((.unresolved_blocker_ids // []) | length > 0))) as $m_gated
-   | ($m_queued | map(select(((.unresolved_blocker_ids // []) | length) == 0
-        and .hold_reason != null and ((.hold_kind // "") != "captain")))) as $m_other_holds
+   | (($m_queued | map(select(((.unresolved_blocker_ids // []) | length) == 0
+        and .hold_reason != null and ((.hold_kind // "") != "captain"))))
+      + ($m_inflight_held | map(select((.hold_kind // "") != "captain")))) as $m_other_holds
    | ($m_queued | map(select(((.unresolved_blocker_ids // []) | length) == 0
         and .hold_reason == null and ((.hold_kind // "") != "captain")
         and ((.captain_actionable // false) | not)))) as $m_ready
    | (($m_inflight | length) + ($m_queued | length) + ($m_landed | length)) as $m_items
    | ([$m_inflight[].mate, $m_queued[].mate, $m_landed[].mate, $m_dec_all[].mate] | unique) as $m_ids
-   # Mates that need a disclosure on this project: unreadable, partially read,
-   # more work than the bounded read showed, or a summary predating per-item
-   # current-work reporting. A quiet card must never silently hide routed work.
+
+   # --- mates that owe this project a disclosure -----------------------------
+   # A quiet card must never silently hide routed work.
+   # A mate this home could not reach at all leaves no evidence of work, only of
+   # a home, so it is disclosed against the projects the fleet records it serving.
    | ([ $mates_unread[] | select((.projects // []) | index($name)) ]) as $m_unread_here
-   | ([ $mates_read[] | select(.provenance.summary_valid != true)
+   | ([ $mates_folded[] | select(.provenance.summary_valid != true)
         | select(((.projects // []) | index($name))
                  or ([((.in_flight // [])[], (.queued // [])[], (.landed // [])[], (.decisions_open // [])[])
                      | .repo] | index($name))) ]) as $m_partial_here
-   | ([ $mates_read[] | select(.in_flight == null and .provenance.summary_valid == true)
-        | select((.projects // []) | index($name)) ]) as $m_blind_here
-   | ([ $mates_read[] | select(((.omitted // []) | length) > 0)
-        | select(((.projects // []) | index($name))
-                 or ([((.in_flight // [])[], (.queued // [])[], (.landed // [])[], (.decisions_open // [])[])
-                     | .repo] | index($name))) ]) as $m_truncated_here
+   # Work this home knows exists but CANNOT place on any project: rows from a
+   # summary that predates per-project reporting, and rows the bounded read cut
+   # off. Those rows are precisely the ones whose project is unknown, so the only
+   # honest placement is every card; guessing a subset would leave the silent
+   # card this fold exists to remove. Both disclose, neither is fatal.
+   | ([ $mates_blind[]
+        | (([(.queued // [])[], (.landed // [])[], (.decisions_open // [])[]]) | length) as $n
+        | select($n > 0) | {mate: .id, items: $n} ]) as $m_blind_here
+   | ([ $mates_folded[] | . as $m
+        | ((.omitted // []) | map(select(work_surface)))
+        | select(length > 0) | {mate: $m.id, omitted: .} ]) as $m_truncated_here
+   | ((($m_blind_here | length) + ($m_truncated_here | length)) > 0) as $m_unplaced
    | ((if $m_items > 0 then
         [{label: "Second mate",
           value: ("with \($m_ids | join(", ")): \($m_inflight | length) under way, \($m_queued | length) queued, \($m_landed | length) landed"
@@ -454,14 +507,17 @@ def run_finished: (.current_state.state == "done");
            evidence: ((.current.reason // "its records could not be fully read") | trunc(300))} ]
       + [ $m_blind_here[]
         | {label: "Second mate",
-           value: ("current work with the \(.id) mate is not visible from this home" | trunc(120)),
+           value: ("work with the \(.mate) mate cannot be placed on a project" | trunc(120)),
            state: "unknown",
-           evidence: "Its record predates current-work reporting; update that mate to a current firstmate."} ]
+           evidence: ("Its records predate per-project reporting, so \(.items | n("item is"; "items are")) counted on no card here. Update that mate to a current firstmate."
+                      | trunc(300))} ]
       + [ $m_truncated_here[]
         | {label: "Second mate",
-           value: ("the \(.id) mate carries more work than this feed could read" | trunc(120)),
+           value: ("the \(.mate) mate carries more work than this feed could read" | trunc(120)),
            state: "unknown",
-           evidence: (([(.omitted // [])[] | "\(.count) more \(.surface)"] | join(", ")) + "." | trunc(300))} ]) as $m_signals
+           evidence: ("Past the bounded read and counted on no card here: "
+                      + ([.omitted[] | "\(.count) more \(surface_words)"] | join(", ")) + "."
+                      | trunc(300))} ]) as $m_signals
    | ($recs | map(select(.state == "in_flight"))) as $inflight
    | ($recs | map(select(.state == "queued"))) as $queued
    | ($recs | map(select(.state == "done"))) as $done
@@ -524,7 +580,11 @@ def run_finished: (.current_state.state == "done");
    # --- headline: the single most pressing grounded fact --------------------
    | (($captain_holds | length) + ($m_decisions | length)) as $captain_wait_n
    | (if ($recs | length) == 0 and $m_items == 0 then
-        (if (($r.desc // "") != "") then $r.desc
+        # An empty card may not claim nothing is recorded while a second mate
+        # holds work this home read but could not place on any project.
+        (if $m_unplaced then
+           "No work is recorded here, and a second mate holds work this home could not place."
+         elif (($r.desc // "") != "") then $r.desc
          else "No work is recorded for this project." end
          | sub(" *\\((added|corrected|updated)[^()]*\\)$"; ""))
       elif ($live_blocked | length) > 0 then

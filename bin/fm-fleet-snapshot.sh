@@ -53,9 +53,10 @@
 #     cross-home rollup can fold a mate's work onto its project; a summary from an
 #     older home may lack in_flight (null) or repo fields, and a consumer must
 #     disclose that gap rather than silently dropping the work. Every record also
-#     carries projects, the parent-recorded provisioning list for that mate -
-#     navigation data, not ownership - so an unreadable mate can still be disclosed
-#     against the projects it serves.
+#     carries projects, the union of the registry entry's and the metadata
+#     record's provisioning lists for that mate - navigation data, not ownership -
+#     so a mate with no metadata record at all can still be disclosed against the
+#     projects it serves.
 #   secondmate_landed: {records[],truncated[],unreadable[],partial[]} - the
 #     compatibility landed-work roll-up derived from secondmate_current. Readable
 #     structured homes with an unknown current classification are partial, not
@@ -900,11 +901,12 @@ BASH
         | select(startswith("- "))
         | (capture("^- (?<id>[^[:space:]]+)")?) as $id
         | select($id != null)
-        | ([capture("^.*\\(host:[[:space:]]*(?<host>[^;)]*);[[:space:]]*root:[[:space:]]*(?<root>[^;)]*);[[:space:]]*home:[[:space:]]*(?<home>[^;)]*);[[:space:]]*scope:[[:space:]]*.*;[[:space:]]*projects:[[:space:]]*[^;)]*;[[:space:]]*added[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}\\)[[:space:]]*$")?][0] // null) as $remote
-        | ([capture("^.*\\(home:[[:space:]]*(?<home>[^;)]*);[[:space:]]*scope:[[:space:]]*.*;[[:space:]]*projects:[[:space:]]*[^;)]*;[[:space:]]*added[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}\\)[[:space:]]*$")?][0] // null) as $local
+        | ([capture("^.*\\(host:[[:space:]]*(?<host>[^;)]*);[[:space:]]*root:[[:space:]]*(?<root>[^;)]*);[[:space:]]*home:[[:space:]]*(?<home>[^;)]*);[[:space:]]*scope:[[:space:]]*.*;[[:space:]]*projects:[[:space:]]*(?<projects>[^;)]*);[[:space:]]*added[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}\\)[[:space:]]*$")?][0] // null) as $remote
+        | ([capture("^.*\\(home:[[:space:]]*(?<home>[^;)]*);[[:space:]]*scope:[[:space:]]*.*;[[:space:]]*projects:[[:space:]]*(?<projects>[^;)]*);[[:space:]]*added[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}\\)[[:space:]]*$")?][0] // null) as $local
         | ($local // $remote) as $route
         | (($local == null) and ($remote != null)) as $is_remote
         | {id:$id.id,home:($route.home // null),host:(if $is_remote then $remote.host else null end),root:(if $is_remote then $remote.root else null end),
+           projects:(($route.projects // "") | split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != ""))),
            remote:$is_remote,registered:true,
            registry_error:(if $route == null or ($route.home | length) == 0 then "registry entry has no home" else null end)} ]
       | group_by(.id)
@@ -1177,9 +1179,13 @@ secondmate_current_json() {  # <parent-tasks-json>
     registered=$(printf '%s' "$row" | jq -r '.registered')
     registry_error=$(printf '%s' "$row" | jq -r '.registry_error // ""')
     task=$(printf '%s' "$row" | jq -c '.parent_task // {}')
-    # Provisioning data from the parent's own record, not ownership: it tells a
+    # Provisioning data from the parent's own records, not ownership: it tells a
     # renderer which projects this mate serves when the mate itself is unreadable.
-    projects=$(printf '%s' "$task" | jq -c '.secondmate_projects // []')
+    # The registry is the half that survives a mate with no metadata record at
+    # all, which is exactly the mate a reader most needs disclosed, so take the
+    # union of both rather than the metadata alone.
+    projects=$(printf '%s' "$row" | jq -c --argjson task "$task" \
+      '((.projects // []) + ($task.secondmate_projects // [])) | unique')
     status_file=$(printf '%s' "$task" | jq -r '.paths.status_log.path // ""')
     event_raw=$(printf '%s' "$task" | jq -r '.paths.status_log.last_event.raw // ""')
     event_note=$(printf '%s' "$task" | jq -r '.paths.status_log.last_event.note // ""')
