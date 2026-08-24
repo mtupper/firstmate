@@ -274,15 +274,30 @@ SH
   printf '%s\n' "$dir"
 }
 
+# wait_for_exit <pid> [legacy-tenths]: wait for <pid> to exit and return its
+# status; return 124 when it is still live at the deadline, after killing it so
+# the suite leaves no child behind.
+#
+# The deadline is wall-clock and never shorter than FM_TEST_WAIT_SECONDS. Call
+# sites historically passed a tenth-of-a-second iteration count sized on an idle
+# machine, which is why a correct-but-slow close went red on a loaded runner: the
+# processes waited on here are real watchers and arms, and their startup alone
+# has been measured taking many seconds under load. The larger of the two wins,
+# so an explicitly wider legacy budget is still honored. Waiting longer never
+# weakens a case - every caller still fails when the pid does not close, and a
+# healthy run returns the moment it does.
 wait_for_exit() {
-  local pid=$1 limit=${2:-50} i=0
-  while [ "$i" -lt "$limit" ]; do
+  local pid=$1 budget deadline
+  budget=$(( ${2:-50} / 10 ))
+  [ "$budget" -ge "$FM_TEST_WAIT_SECONDS" ] || budget=$FM_TEST_WAIT_SECONDS
+  deadline=$(( $(date +%s) + budget ))
+  while :; do
     if ! is_live_non_zombie "$pid"; then
       wait "$pid"
       return "$?"
     fi
+    [ "$(date +%s)" -lt "$deadline" ] || break
     sleep 0.1
-    i=$((i + 1))
   done
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true

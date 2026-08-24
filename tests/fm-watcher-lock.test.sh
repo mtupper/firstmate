@@ -47,7 +47,8 @@ test_singleton_start() {
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out2" &
   pid2=$!
   i=0
-  while [ "$i" -lt 50 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     live=0
     is_live_non_zombie "$pid1" && live=$((live + 1))
     is_live_non_zombie "$pid2" && live=$((live + 1))
@@ -57,7 +58,8 @@ test_singleton_start() {
   done
   [ "$live" -eq 1 ] || fail "expected exactly one live watcher, got $live"
   i=0
-  while [ "$i" -lt 50 ] && ! grep -h 'watcher: already running pid ' "$out1" "$out2" >/dev/null 2>&1; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline" && ! grep -h 'watcher: already running pid ' "$out1" "$out2" >/dev/null 2>&1; do
     sleep 0.02
     i=$((i + 1))
   done
@@ -85,7 +87,8 @@ test_stale_watch_lock_reclaimed() {
   i=0
   live=0
   lock_pid=
-  while [ "$i" -lt 50 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     live=0
     is_live_non_zombie "$pid" && live=1
     lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
@@ -98,6 +101,53 @@ test_stale_watch_lock_reclaimed() {
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   pass "killed watcher stale lock is reclaimed"
+}
+
+# The main loop checks self-eviction - "the lock no longer names me" - BEFORE it
+# touches the liveness beacon, so a watcher that fails to take over a stale lock
+# exits without ever beating. Supervision then reads a beacon that never moves
+# and kills each arm on a confirmation timeout, so the home looks unsupervised
+# while watchers keep starting and quietly standing down. What has to hold is
+# not just that the stale pid gets replaced but that this watcher reaches its
+# first beat, which is what the rest of the fleet actually observes.
+#
+# Both lock shapes are covered because they are left behind by different
+# accidents: a plain directory is what a hand-built or partially written lock
+# looks like, and a symlink to an owner directory is what a real acquisition
+# leaves when it is interrupted before the owner records its identity.
+test_watcher_beats_after_reclaiming_a_dead_pid_watch_lock() {
+  local shape dir state fakebin out owner dead pid beat_seen lock_pid
+  for shape in directory symlink; do
+    dir=$(make_case "dead-lock-$shape")
+    state="$dir/state"
+    fakebin="$dir/fakebin"
+    out="$dir/watch.out"
+    mark_pr_check_migration_complete "$state"
+    dead=$(dead_pid)
+    if [ "$shape" = directory ]; then
+      mkdir "$state/.watch.lock"
+      printf '%s\n' "$dead" > "$state/.watch.lock/pid"
+    else
+      owner="$state/.watch.lock.owner.stale"
+      mkdir "$owner"
+      printf '%s\n' "$dead" > "$owner/pid"
+      ln -s "$owner" "$state/.watch.lock"
+    fi
+    PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    pid=$!
+    fm_test_register_pid "$pid"
+    beat_seen=0
+    fm_test_wait_until test -e "$state/.last-watcher-beat" && beat_seen=1
+    lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    [ "$beat_seen" -eq 1 ] \
+      || fail "watcher started behind a dead-pid $shape lock never refreshed the beacon: $(cat "$out")"
+    [ "$lock_pid" != "$dead" ] \
+      || fail "watcher left the dead pid $dead in the $shape watch lock"
+  done
+  pass "a watcher started behind a dead-pid watch lock takes it over and refreshes the beacon"
 }
 
 test_live_stale_watch_lock_is_actionable() {
@@ -288,7 +338,8 @@ test_lock_live_steal_mutex_is_not_reclaimed() {
   ' _ "$LIB" "$lockdir" "$holder_file" &
   holder=$!
   i=0
-  while [ "$i" -lt 50 ] && [ ! -s "$holder_file" ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline" && [ ! -s "$holder_file" ]; do
     sleep 0.1
     i=$((i + 1))
   done
@@ -437,7 +488,8 @@ test_watch_restart_rejects_reused_pid() {
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" --restart > "$out" &
   pid=$!
   i=0
-  while [ "$i" -lt 80 ] && is_live_non_zombie "$pid"; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline" && is_live_non_zombie "$pid"; do
     sleep 0.1
     i=$((i + 1))
   done
@@ -463,7 +515,8 @@ test_watch_restart_attaches_to_healthy_peer() {
   node -e 'const fs = require("node:fs"); process.on("SIGTERM", () => {}); fs.writeFileSync(process.argv[1], "ready\n"); setTimeout(() => {}, 300000)' "$peer_ready" &
   peer=$!
   i=0
-  while [ "$i" -lt 50 ] && [ ! -s "$peer_ready" ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline" && [ ! -s "$peer_ready" ]; do
     sleep 0.1
     i=$((i + 1))
   done
@@ -482,7 +535,8 @@ test_watch_restart_attaches_to_healthy_peer() {
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" --restart > "$out" &
   armpid=$!
   i=0
-  while [ "$i" -lt 80 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     grep -qF "watcher: attached pid=$peer" "$out" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
@@ -508,7 +562,8 @@ test_watcher_self_evicts_on_lock_takeover() {
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
   i=0
-  while [ "$i" -lt 80 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] \
       && [ -s "$state/.watch.lock/pid-identity" ] \
       && [ -e "$state/.last-watcher-beat" ] \
@@ -536,10 +591,20 @@ test_arm_self_eviction_is_loud_without_successor() {
   fakebin="$dir/fakebin"
   armout="$dir/arm.out"
   mark_pr_check_migration_complete "$state"
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
+  # The arm prints "watcher: started" only after it has CONFIRMED a fresh
+  # beacon, so the confirmation budget has to cover a real watcher's startup on
+  # whatever machine this runs on. A one-second budget expired on a loaded
+  # runner, the arm reported a confirmation timeout instead, and this case then
+  # failed before reaching the self-eviction it exists to check - which is also
+  # the wrong failure to be asserting on. Run confirmation on the production
+  # default instead of an invented one, so the only failure this case can report
+  # is the typed self-eviction one below.
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
   armpid=$!
   i=0
-  while [ "$i" -lt 80 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
@@ -570,7 +635,8 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   wpid=$!
   i=0
-  while [ "$i" -lt 60 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] && [ -e "$state/.last-watcher-beat" ] && break
     sleep 0.1
     i=$((i + 1))
@@ -581,7 +647,8 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
   armpid=$!
   i=0
-  while [ "$i" -lt 80 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     grep -qF "watcher: attached pid=$wpid" "$armout" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
@@ -611,7 +678,8 @@ test_attached_arm_signal_is_recorded_in_cycle_ledger() {
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   wpid=$!
   i=0
-  while [ "$i" -lt 60 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] && [ -e "$state/.last-watcher-beat" ] && break
     sleep 0.1
     i=$((i + 1))
@@ -620,7 +688,8 @@ test_attached_arm_signal_is_recorded_in_cycle_ledger() {
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
   armpid=$!
   i=0
-  while [ "$i" -lt 80 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     grep -qF "watcher: attached pid=$wpid" "$armout" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
@@ -663,7 +732,8 @@ test_arm_starts_and_self_heals() {
     PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
     armpid=$!
     i=0
-    while [ "$i" -lt 80 ]; do
+    fm_wait_deadline=$(fm_test_deadline)
+    while fm_test_before "$fm_wait_deadline"; do
       if [ "$row" = dead-pid ]; then
         is_live_non_zombie "$armpid" || break
       else
@@ -702,7 +772,8 @@ test_arm_hup_cleans_child_and_temp_output() {
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
   armpid=$!
   i=0
-  while [ "$i" -lt 80 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
@@ -714,7 +785,8 @@ test_arm_hup_cleans_child_and_temp_output() {
   status=$?
   [ "$status" -eq 129 ] || fail "arm did not exit with HUP status (got $status)"
   i=0
-  while [ "$i" -lt 80 ] && is_live_non_zombie "$lock_pid"; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline" && is_live_non_zombie "$lock_pid"; do
     sleep 0.1
     i=$((i + 1))
   done
@@ -773,7 +845,8 @@ test_arm_waits_for_peer_beacon_after_child_stands_down() {
   # this regression fixture race the confirmation deadline under full-suite
   # load, rather than testing the intended successor-handshake boundary.
   i=0
-  while [ "$i" -lt 80 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     grep -qF "watcher: already running pid $peer" "$state"/.watch-arm-output.* 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
@@ -782,7 +855,8 @@ test_arm_waits_for_peer_beacon_after_child_stands_down() {
     || fail "arm child did not stand down behind the peer watcher"
   touch "$state/.last-watcher-beat"
   i=0
-  while [ "$i" -lt 80 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     grep -qF "watcher: attached pid=$peer" "$armout" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
@@ -858,7 +932,8 @@ SH
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_WATCH_PREDECESSOR_ARM_PID="$first_arm" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
   successor_arm=$!
   i=0
-  while [ "$i" -lt 80 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
@@ -883,7 +958,8 @@ SH
     PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_WATCH_CYCLE_LOG_MAX_BYTES=1400 FM_WATCH_CYCLE_LOG_KEEP_LINES=2 FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
     successor_arm=$!
     i=0
-    while [ "$i" -lt 80 ]; do
+    fm_wait_deadline=$(fm_test_deadline)
+    while fm_test_before "$fm_wait_deadline"; do
       grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
       sleep 0.1
       i=$((i + 1))
@@ -912,7 +988,8 @@ test_stopped_watcher_is_live_but_stale_then_exit_is_classified() {
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
   armpid=$!
   i=0
-  while [ "$i" -lt 80 ]; do
+  fm_wait_deadline=$(fm_test_deadline)
+  while fm_test_before "$fm_wait_deadline"; do
     grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
     sleep 0.1
     i=$((i + 1))
@@ -1105,6 +1182,7 @@ test_msys_pid_identity_uses_proc
 test_stale_watch_lock_reclaimed
 test_stale_watch_reclaim_publishes_before_clear
 test_live_stale_watch_lock_is_actionable
+test_watcher_beats_after_reclaiming_a_dead_pid_watch_lock
 test_guard_warnings
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
