@@ -673,14 +673,14 @@ pass "mate decisions, blockers, tasks and signals fold in, named but not separat
 # --- an unreadable mate is disclosed, never silently quiet ------------------
 # The registry names a mate whose home does not exist; its project is named only
 # by the parent record. The card must exist and carry the unknown disclosure.
-HOME_F=$(new_home home-f)
-FAKEBIN_F=$(make_fakebin "$HOME_F")
-cat > "$HOME_F/data/projects.md" <<'EOF'
+HOME_L=$(new_home home-l)
+FAKEBIN_L=$(make_fakebin "$HOME_L")
+cat > "$HOME_L/data/projects.md" <<'EOF'
 # Projects
 
 - placeholder [local-only] - Keeps the registry non-empty (added 2026-07-01)
 EOF
-cat > "$HOME_F/data/backlog.md" <<'EOF'
+cat > "$HOME_L/data/backlog.md" <<'EOF'
 ## In flight
 
 ## Queued
@@ -688,12 +688,12 @@ cat > "$HOME_F/data/backlog.md" <<'EOF'
 ## Done
 EOF
 printf -- '- mate-x - The ghost mate (home: %s; scope: ghost things; projects: ghostwork; added 2026-07-01)\n' \
-  "$TMP_ROOT/nonexistent-mate-home" > "$HOME_F/data/secondmates.md"
-fm_write_secondmate_meta "$HOME_F/state/mate-x.meta" "$TMP_ROOT/nonexistent-mate-home" "firstmate:fm-mate-x" ghostwork
+  "$TMP_ROOT/nonexistent-mate-home" > "$HOME_L/data/secondmates.md"
+fm_write_secondmate_meta "$HOME_L/state/mate-x.meta" "$TMP_ROOT/nonexistent-mate-home" "firstmate:fm-mate-x" ghostwork
 
-FEED_F=$(run "$HOME_F" "$FAKEBIN_F" --stdout) || fail "generating the home-f feed failed"
-GW=$(printf '%s' "$FEED_F" | jq '.projects[] | select(.id == "ghostwork")')
-[ -n "$GW" ] || fail "a project served only by an unreadable mate must still get a card: $(printf '%s' "$FEED_F" | jq -c '[.projects[].id]')"
+FEED_L=$(run "$HOME_L" "$FAKEBIN_L" --stdout) || fail "generating the home-l feed failed"
+GW=$(printf '%s' "$FEED_L" | jq '.projects[] | select(.id == "ghostwork")')
+[ -n "$GW" ] || fail "a project served only by an unreadable mate must still get a card: $(printf '%s' "$FEED_L" | jq -c '[.projects[].id]')"
 printf '%s' "$GW" | jq -e '[.currentStatus.signals[] | select(.label == "Second mate")][0]
                            | .state == "unknown" and (.value | contains("mate-x"))' >/dev/null \
   || fail "an unreadable mate must be disclosed on its project: $(printf '%s' "$GW" | jq -c '.currentStatus.signals')"
