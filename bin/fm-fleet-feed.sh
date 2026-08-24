@@ -307,9 +307,16 @@ def trunc($n):
 # captain-facing field: drop every sentence that points at an internal record
 # path, and truncate on a sentence boundary rather than mid-word or mid-path.
 # The marker (U+001F) replaces each path token before the sentence split, so a
-# dot inside a file name cannot masquerade as a sentence boundary.
+# dot inside a file name cannot masquerade as a sentence boundary. A quoting
+# backtick delimits the token like any other quote, and the token stops before
+# the trailing terminator so the pointer sentence still ends where it ended.
+# A terminator only ends a sentence when whitespace or the end of the text
+# follows it, so a dot inside a token (a version, an id, a file name) never
+# splits that token in half.
 def sentences:
-  [match("[^.!?]+[.!?]*"; "g").string | gsub("^ +| +$"; "")] | map(select(length > 0));
+  [match("(?:[^.!?]|[.!?](?!\\s|$))+[.!?]*|[.!?]+"; "g").string
+   | gsub("^ +| +$"; "")]
+  | map(select(length > 0));
 def word_trunc($n):
   .[:$n - 1] | if test(" ") then sub(" [^ ]*$"; "") else . end | . + "…";
 def trunc_sentence($n):
@@ -331,7 +338,7 @@ def trunc_sentence($n):
 def captain_text($n):
   if . == null then null
   else (tostring | gsub("\\s+"; " ")
-        | gsub("(?<pre>^|[\\s(\\[\"\\x{27}.])(\\./)?(data|state)/[^\\s)\\]\"\\x{27}]*"; "\(.pre)\u001f")
+        | gsub("(?<pre>^|[\\s(\\[\"\\x{27}\\x{60}.])(\\./)?(data|state)/(?:[^\\s)\\]\"\\x{27}\\x{60}]*[^\\s)\\]\"\\x{27}\\x{60}.,;:!?])?"; "\(.pre)\u001f")
         | gsub("\\s*[(\\[][^()\\[\\]]*\\x{1f}[^()\\[\\]]*[)\\]]"; "")
         | sentences
         | map(select(contains("\u001f") | not))
@@ -460,7 +467,7 @@ def run_finished: (.current_state.state == "done");
       elif ($drifted | length) > 0 then
         "\($drifted[0].id) has finished, but the backlog still records it in flight."
       elif ($inflight | length) > 0 then
-        "Under way: \($inflight[0].title)"
+        "Under way: \((($inflight[0].title | captain_text(160)) // $inflight[0].id))"
         + (if ($captain_holds | length) > 0
            then ", and \($captain_holds | length | n("decision waits"; "decisions wait")) on the captain." else "." end)
       elif ($captain_holds | length) > 0 then
@@ -517,7 +524,7 @@ def run_finished: (.current_state.state == "done");
            severity: "minor", owner: "shared",
            unblockedBy: "Marking the item done in the backlog."}
       ] + [ $captain_holds[] | select(.state == "in_flight")
-        | {title: (.title | trunc(160)),
+        | {title: ((.title | captain_text(160)) // .id),
            detail: (.hold_reason | captain_text(500)),
            severity: "critical", owner: "captain",
            since: ((.since | dateof) | trunc(60)),
@@ -528,13 +535,13 @@ def run_finished: (.current_state.state == "done");
            since: ((.since | dateof) | trunc(60)),
            unblockedBy: "Dispatching it or returning it to the queue."}
       ] + [ $gated[]
-        | {title: (.title | trunc(160)),
+        | {title: ((.title | captain_text(160)) // .id),
            detail: ("Waiting on \(.unresolved_blocker_ids | join(", "))." | trunc(500)),
            severity: "major", owner: "agents",
            since: ((.since | dateof) | trunc(60)),
            unblockedBy: ("\(.unresolved_blocker_ids | join(", ")) landing first." | trunc(300))}
       ] + [ $other_holds[]
-        | {title: (.title | trunc(160)),
+        | {title: ((.title | captain_text(160)) // .id),
            detail: (.hold_reason | captain_text(500)),
            severity: "major", owner: "shared",
            since: ((.since | dateof) | trunc(60)),
@@ -551,11 +558,11 @@ def run_finished: (.current_state.state == "done");
                   then "The work is finished and waiting for the captain to say whether it lands."
                   else null end) | trunc(300))}
       ] + [ $captain_holds[] | select(.state == "in_flight")
-        | {title: (.title | trunc(160)),
+        | {title: ((.title | captain_text(160)) // .id),
            detail: (.hold_reason | captain_text(400)),
            why: ("Work on \(.id) is stopped until this is answered." | trunc(300))}
       ] + [ $captain_holds[] | select(.state != "in_flight")
-        | {title: (.title | trunc(160)),
+        | {title: ((.title | captain_text(160)) // .id),
            detail: (.hold_reason | captain_text(400)),
            why: (if .captain_actionable
                  then "It is queued with nothing gating it, so it can be answered now."
@@ -563,8 +570,8 @@ def run_finished: (.current_state.state == "done");
       ] | .[:3]) as $captain_tasks
 
    | ([ $ready[]
-        | {title: (.title | trunc(160)),
-           detail: (.body_excerpt | trunc(400)),
+        | {title: ((.title | captain_text(160)) // .id),
+           detail: (.body_excerpt | captain_text(400)),
            why: ((if (.priority // "") != "" then "Queued at priority \(.priority) " else "Queued " end)
                  + "with nothing gating it." | trunc(300)),
            order_priority: (.priority // "99"),

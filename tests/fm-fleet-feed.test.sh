@@ -563,6 +563,9 @@ EOF
 cat > "$HOME_E/data/backlog.md" <<'EOF'
 ## In flight
 - [ ] pointy-hold - Choose the export format (repo: pointy) (kind: ship) (since 2026-07-06) (hold: The captain must pick the export format. Full record in data/decisions/2026-07-06-export-format.md) (hold-kind: captain)
+- [ ] pointy-codec - Choose the codec (repo: pointy) (kind: ship) (since 2026-07-08) (hold: Full record in data/decisions/2026-07-08-codec.md. The captain must choose the codec v1.2 before release.) (hold-kind: captain)
+- [ ] pointy-quoted - Choose the tariff (repo: pointy) (kind: ship) (since 2026-07-09) (hold: The captain must approve the tariff. Context in `data/decisions/2026-07-09-tariff.md`.) (hold-kind: captain)
+- [ ] pointy-titled - Rework state/pointy-ship handling (repo: pointy) (kind: ship) (since 2026-07-10) (hold: The captain must confirm the rework.) (hold-kind: captain)
 - [ ] pointy-ship - Ship the pointy thing (repo: pointy) (kind: ship) (since 2026-07-07)
 EOF
 make_clone "$HOME_E" pointy 'git@github.com:acme/pointy.git'
@@ -585,6 +588,20 @@ printf '%s' "$PT" | jq -e '.decisions[0].why == "The captain must pick the expor
   || fail "a hold reason should keep the decision and drop the pointer: $(printf '%s' "$PT" | jq -c '.decisions[0]')"
 printf '%s' "$PT" | jq -e '[.blockers[] | .detail // ""] | all(contains("…") | not)' >/dev/null \
   || fail "pointer-stripped text should end on a sentence boundary, not an ellipsis: $(printf '%s' "$PT" | jq -c '.blockers')"
+# A pointer sentence must not take the sentence after it down with it, and a
+# dot inside a token must not split that token.
+printf '%s' "$PT" | jq -e '[.decisions[] | select(.question == "Choose the codec?")]
+                            | first.why == "The captain must choose the codec v1.2 before release."' >/dev/null \
+  || fail "a leading pointer sentence should be dropped on its own: $(printf '%s' "$PT" | jq -c '.decisions')"
+# A backtick quotes a path exactly like any other quote.
+printf '%s' "$PT" | jq -e '[.decisions[] | select(.question == "Choose the tariff?")]
+                            | first.why == "The captain must approve the tariff."' >/dev/null \
+  || fail "a backtick-quoted pointer should be dropped: $(printf '%s' "$PT" | jq -c '.decisions')"
+# A backlog title is internal free text too, so every title the captain reads
+# goes through the same filter and falls back to the item id.
+printf '%s' "$PT" | jq -e '[.blockers[] | select(.since == "2026-07-10")]
+                            | first.title == "pointy-titled"' >/dev/null \
+  || fail "a path-carrying title should fall back to the item id: $(printf '%s' "$PT" | jq -c '.blockers')"
 pass "internal record paths are dropped before any captain-facing field"
 
 # --- firstmate never writes into a project ----------------------------------
