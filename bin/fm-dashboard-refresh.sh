@@ -154,8 +154,10 @@ guard_placement() {  # refuse the resolved roots wherever a write could reach a 
   esac
 }
 
-WORK=$(resolve_intent "$WORK") || die "cannot resolve the work root at $WORK"
-PUBLISH_DIR=$(resolve_intent "$PUBLISH_DIR") || die "cannot resolve the publish dir at $PUBLISH_DIR"
+intent=$WORK
+WORK=$(resolve_intent "$intent") || die "cannot resolve the work root at $intent"
+intent=$PUBLISH_DIR
+PUBLISH_DIR=$(resolve_intent "$intent") || die "cannot resolve the publish dir at $intent"
 BUILD="$WORK/build"
 guard_placement
 
@@ -163,8 +165,10 @@ FEED="$WORK/feed.json"
 LOCKFILE="$WORK/.lock"
 mkdir -p "$WORK" || die "cannot create the work root at $WORK"
 mkdir -p "$BUILD" || die "cannot create the build checkout at $BUILD"
-BUILD=$(resolve_intent "$BUILD") || die "cannot resolve the build checkout at $BUILD"
-PUBLISH_DIR=$(resolve_intent "$PUBLISH_DIR") || die "cannot resolve the publish dir at $PUBLISH_DIR"
+intent=$BUILD
+BUILD=$(resolve_intent "$intent") || die "cannot resolve the build checkout at $intent"
+intent=$PUBLISH_DIR
+PUBLISH_DIR=$(resolve_intent "$intent") || die "cannot resolve the publish dir at $intent"
 guard_placement
 mkdir -p "$PUBLISH_DIR" || die "cannot create the publish dir at $PUBLISH_DIR"
 
@@ -226,8 +230,12 @@ PAGE="$BUILD/.output/public/index.html"
 # --- 5. publish, keeping the previous page recoverable ----------------------
 # The new page is staged next to its target so the final replace is a same-
 # filesystem rename: the served file is never half-written, and the previous
-# page is preserved first, so no failure window loses it.
+# page is preserved first, so no failure window loses it. The publish dir is
+# what a static server exposes, so the stage only ever lives between the copy
+# and the replace: any exit in between takes it away again, leaving the served
+# directory exactly as this step found it.
 STAGE="$PUBLISH_DIR/index.html.new"
+trap 'rm -f "$STAGE"' EXIT
 cp "$PAGE" "$STAGE" || die "cannot stage the new page in $PUBLISH_DIR"
 kept=
 if [ -f "$PUBLISH_DIR/index.html" ]; then
@@ -236,6 +244,7 @@ if [ -f "$PUBLISH_DIR/index.html" ]; then
   kept=", previous page kept as index.html.prev"
 fi
 mv "$STAGE" "$PUBLISH_DIR/index.html" || die "cannot publish the new page"
+trap - EXIT
 
 generated=$(jq -r '.generatedAt // empty' "$FEED" 2>/dev/null || true)
 printf 'published %s (feed generated %s%s)\n' \

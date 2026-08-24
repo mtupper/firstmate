@@ -4,7 +4,8 @@
 # Covers the full manual path with a fake pnpm standing in for the dashboard's
 # toolchain: a first publish, a second publish that keeps the previous page
 # recoverable, a failed generation, a failed build, and an empty build each
-# leaving the served page untouched, the overlap lock refusing a live holder
+# leaving the served page untouched, a failed publish leaving no staged page
+# behind, the overlap lock refusing a live holder
 # and reclaiming a dead one, the projects-root and build-checkout publish
 # refusals including the case-aliased spellings of both, the refusal of a build
 # checkout that resolves into the clone, and the project clone staying
@@ -158,6 +159,25 @@ printf '%s' "$OUT" | grep -q 'produced no page' \
 [ "$(cat "$PAGE")" = "$SECOND" ] || fail "an empty build replaced the published page"
 pass "an empty build is refused even when stale output survives from a previous run"
 
+# --- a failed publish leaves nothing extra in the served directory -----------
+# The publish dir is what a static server exposes, so a run that dies between
+# staging the new page and replacing the served one must not leave the staged
+# copy behind: it would be reachable at /index.html.new beside the honest
+# stale /index.html, and nothing later cleans it up. A dangling symlink at
+# index.html.prev makes the preserve step fail for any user, root included.
+cp -p "$PREV" "$TMP_ROOT/prev.keep"
+rm -f "$PREV"
+ln -s "$TMP_ROOT/no-such-dir/no-such-file" "$PREV"
+OUT=$(run 2>&1) && fail "the refresh must fail when the previous page cannot be preserved"
+printf '%s' "$OUT" | grep -q 'published page is untouched' \
+  || fail "a failed preserve should say the page is untouched: $OUT"
+[ "$(cat "$PAGE")" = "$SECOND" ] || fail "a failed preserve replaced the published page"
+[ -e "$PUBLISH/index.html.new" ] \
+  && fail "the failed publish left the staged page in the served directory"
+rm -f "$PREV"
+cp -p "$TMP_ROOT/prev.keep" "$PREV"
+pass "a failed publish leaves no staged page behind in the served directory"
+
 # --- overlapping runs: a live holder refuses, a dead one never blocks --------
 # The lock is the flock on data/dashboard-build/.lock named in the script's
 # header - part of its documented layout. A fixture holder takes the same
@@ -195,9 +215,14 @@ printf '%s' "$OUT" | grep -q 'projects root' \
 [ -e "$HOME_A/projects/dash/served" ] && fail "the refused publish dir was still created inside the clone"
 # A '..' past a nonexistent component must not survive resolution and let
 # mkdir -p re-expand it into the projects root behind the prefix guard.
-OUT=$(run --publish-dir "$HOME_A/data/missing/../../projects/dash/inner" 2>&1)
+UNRESOLVABLE="$HOME_A/data/missing/../../projects/dash/inner"
+OUT=$(run --publish-dir "$UNRESOLVABLE" 2>&1)
 STATUS=$?
 [ "$STATUS" -ne 0 ] || fail "a publish dir using '..' past a nonexistent component must be refused: $OUT"
+# The refusal has to name the path the captain typed; it is the only clue to
+# which of the run's several roots was rejected.
+printf '%s' "$OUT" | grep -qF "$UNRESOLVABLE" \
+  || fail "the refusal should name the path it could not resolve: $OUT"
 [ -e "$HOME_A/projects/dash/inner" ] && fail "the '..' publish dir was still created inside the clone"
 [ -e "$HOME_A/data/missing" ] && fail "the refused '..' publish dir left a partial path behind"
 OUT=$(run --publish-dir "$HOME_A/data/dashboard-build/build/served" 2>&1)
