@@ -53,6 +53,11 @@ For whole-fleet read-only review, `bin/fm-fleet-snapshot.sh --json` emits schema
 `bin/fm-fleet-view.sh` renders that snapshot as Markdown for humans, `bin/fm-bearings-snapshot.sh` provides the bounded bearings projection, and `bin/fm-fleet-feed.sh` projects it, the project registry and a bounded read-only clone read onto the dashboard project's own feed contract, so every view consumes one structured contract instead of reparsing raw fleet files.
 The feed contract is owned by the dashboard repository, not by firstmate, so `bin/fm-fleet-feed.sh` obeys that schema, emits only fields this home can ground, and refuses to write a partial feed.
 The script header owns the exact JSON schema.
+`bin/fm-dashboard-refresh.sh` is the one manual trigger that carries that feed the rest of the way: it generates a fresh feed, rebuilds the dashboard's self-contained page from it, and publishes the result where the page is served.
+It is a trigger, not a scheduler, and it arms no timer; a future schedule calls this same command.
+Because hard rule 1 forbids running a build inside `projects/`, the rebuild happens in a dedicated checkout under `data/` that the trigger owns, cloned from the project clone and re-synced to its HEAD each run, and the feed is passed by absolute path so no fleet content can reach a repository.
+Overlapping runs are refused by a kernel-held `flock` that the kernel releases on holder exit, so a crashed run never wedges the trigger, and every failure before the single atomic replace leaves the previously published page in place rather than blanking it.
+The script header owns the exact placement guards, publish layout, and flags.
 
 ### Registered secondmate current state
 
