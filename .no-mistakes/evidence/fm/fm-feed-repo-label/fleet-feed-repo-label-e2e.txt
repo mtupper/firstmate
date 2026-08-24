@@ -1,0 +1,48 @@
+E2E: fleet-feed repo labels from the real firstmate home (/Users/mtupper/dgh/firstmate)
+Date: 2026-08-23. Branch fm/fm-feed-repo-label (7b7dc4d) vs base a187681.
+
+The real lavish-axi clone has the exact setup the fix targets - origin's push
+URL is the literal DISABLED sentinel and the fork remote is where work lands:
+
+  $ git -C /Users/mtupper/dgh/firstmate/projects/lavish-axi remote -v
+  fork    git@github.com:mtupper/lavish-axi.git (fetch)
+  fork    git@github.com:mtupper/lavish-axi.git (push)
+  origin  https://github.com/kunchenguid/lavish-axi.git (fetch)
+  origin  DISABLED-no-push-to-upstream (push)
+
+Repo labels from `bin/fm-fleet-feed.sh --stdout` run against the live home,
+fixed script (7b7dc4d):
+
+  $ FM_ROOT_OVERRIDE=/Users/mtupper/dgh/firstmate bin/fm-fleet-feed.sh --stdout \
+      | jq -r '.projects[] | "\(.id)\t\(.repo // "(omitted)")"'
+  firstmate          github.com/mtupper/firstmate
+  marketing-content  gitlab.com/mtupper/marketing-content
+  dotfiles           github.com/mtupper/dotfiles
+  brand-scout        gitlab.com/mtupper/brand-scout
+  dashboard          github.com/mtupper/dashboard
+  afol               github.com/mtupper/afol
+  lavish-axi         github.com/mtupper/lavish-axi      <-- the fork, not the upstream
+  afol-app           github.com/mtupper/afol-app
+  afol-genius        github.com/mtupper/afol-genius
+  afol-www           github.com/mtupper/afol-www
+
+Diff of the label table, base script (a187681) vs fixed script (7b7dc4d),
+same live home. Only lavish-axi changes; every other project is untouched:
+
+  7c7
+  < lavish-axi	github.com/kunchenguid/lavish-axi
+  ---
+  > lavish-axi	github.com/mtupper/lavish-axi
+
+Regression proof for the new test (tests/fm-fleet-feed.test.sh, home-f
+fixture): run against the BASE script it fails with the exact wrong label,
+run against the fixed script the full file passes.
+
+  base script:  exit=1
+    not ok - a fork with a disabled origin push URL should be labelled by its
+             pushable remote: "github.com/acme-upstream/forked"
+  fixed script: exit=0, 30 "ok - " lines under /bin/bash 3.2.57 (macOS),
+    matching the CI workflow's bumped pin of 30, including:
+    ok - the repo label names the pushable remote, with origin as the fallback
+    (covers both the fork case and the no-pushable-remote fallback to
+     origin's fetch URL)

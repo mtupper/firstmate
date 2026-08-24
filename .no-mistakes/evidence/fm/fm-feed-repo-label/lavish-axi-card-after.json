@@ -1,0 +1,76 @@
+{
+  "id": "lavish-axi",
+  "name": "lavish-axi",
+  "status": "active",
+  "health": "on-track",
+  "headline": "Nothing is open. lavish-theme-upstream-watch landed 2026-08-21.",
+  "updatedAt": "2026-08-21",
+  "repo": "github.com/mtupper/lavish-axi",
+  "executiveSummary": {
+    "lede": "lavish-axi has 1 item recorded: 0 in flight, 0 queued, 1 landed. No decision waits on the captain. Nothing is stopping progress. Last activity 2026-08-21.",
+    "metrics": [
+      {
+        "label": "In flight",
+        "value": "0",
+        "tone": "neutral"
+      },
+      {
+        "label": "Queued",
+        "value": "0",
+        "tone": "neutral"
+      },
+      {
+        "label": "Landed",
+        "value": "1",
+        "tone": "good"
+      },
+      {
+        "label": "Captain decisions",
+        "value": "0",
+        "tone": "good"
+      },
+      {
+        "label": "Stopping progress",
+        "value": "0",
+        "tone": "good"
+      },
+      {
+        "label": "Last activity",
+        "value": "2026-08-21",
+        "tone": "neutral"
+      }
+    ]
+  },
+  "currentStatus": {
+    "summary": "Nothing is open. lavish-theme-upstream-watch landed 2026-08-21. Registered delivery posture: local-only, autonomy off.",
+    "signals": [
+      {
+        "label": "Dispatched work",
+        "value": "nothing dispatched",
+        "state": "good",
+        "evidence": "Task records: lavish-theme."
+      },
+      {
+        "label": "Decisions waiting on the captain",
+        "value": "none open",
+        "state": "good"
+      },
+      {
+        "label": "Items waiting on other work",
+        "value": "none gated",
+        "state": "good"
+      },
+      {
+        "label": "Local copy",
+        "value": "main, clean",
+        "state": "good",
+        "evidence": "projects/lavish-axi"
+      }
+    ]
+  },
+  "decisions": [],
+  "blockers": [],
+  "captainTasks": [],
+  "agentTasks": [],
+  "order": 6
+}
