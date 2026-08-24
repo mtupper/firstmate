@@ -15,6 +15,10 @@
 #   - <name> - <desc> (added <date>)                  -> no-mistakes off  (legacy default)
 #   - <name> [<mode>] - <desc> (added <date>)          -> <mode> off
 #   - <name> [<mode> +yolo] - <desc> (added <date>)    -> <mode> on
+#   - <name> [<mode>] [<lifecycle>] - <desc> ...       -> the optional SECOND
+#     bracket is a lifecycle declaration ([stable], [dormant] or
+#     [archived: <reason>]). bin/fm-fleet-feed.sh owns its semantics; this
+#     script ignores it, because the mode parse stops at the first "]".
 #
 # Registered modes:
 #   no-mistakes            full pipeline -> PR -> configured merge authority (default)
