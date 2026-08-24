@@ -84,6 +84,9 @@ FM_TEST_OWNER_IDENTITY=$(fm_test_pid_identity "$$") || {
 
 fm_test_cleanup() {
   local d
+  # Before the state directories go away, so a still-live watcher never spins on
+  # a deleted fixture.
+  fm_test_reap_registered
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     [ -n "$d" ] && rm -rf "$d"
   done
@@ -143,6 +146,82 @@ fm_test_reap_orphans() {
 }
 
 fm_test_reap_orphans
+
+# --- load-tolerant waiting --------------------------------------------------
+#
+# Shared CI runners dilate wall-clock unpredictably. A firstmate watcher that
+# reaches its first poll in about a second on an idle machine has been measured
+# taking over nine seconds on a loaded one, so any wait sized from an idle-machine
+# observation turns correct-but-slow behavior into a red test. Every wait for an
+# expected outcome therefore uses a deadline, and the budget is a hang tripwire
+# rather than the expected end of the wait: a healthy run returns the moment the
+# condition holds, so a generous budget costs nothing while a genuinely stuck
+# process still fails the test.
+#
+# Raise FM_TEST_WAIT_SECONDS for an unusually slow machine; never lower it in a
+# test file to make a specific case finish sooner.
+FM_TEST_WAIT_SECONDS=${FM_TEST_WAIT_SECONDS:-90}
+
+# fm_test_deadline [seconds]: the epoch second at which a wait has spent its
+# budget. Pair it with fm_test_before for loops whose body is too case-specific
+# to express as a single predicate.
+fm_test_deadline() {
+  echo $(( $(date +%s) + ${1:-$FM_TEST_WAIT_SECONDS} ))
+}
+
+# fm_test_before <deadline>: true while that budget still has room.
+fm_test_before() {
+  [ "$(date +%s)" -lt "$1" ]
+}
+
+# fm_test_wait_until [--seconds <n>] <command...>: poll <command> until it
+# succeeds. Returns 0 as soon as it does, 1 when the deadline passes.
+fm_test_wait_until() {
+  local budget=$FM_TEST_WAIT_SECONDS deadline
+  if [ "${1:-}" = --seconds ]; then
+    budget=$2
+    shift 2
+  fi
+  deadline=$(( $(date +%s) + budget ))
+  while :; do
+    "$@" && return 0
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
+    sleep 0.05
+  done
+}
+
+# --- real background processes a test started -------------------------------
+#
+# Suites that drive a REAL bin/fm-watch.sh or bin/fm-watch-arm.sh background it
+# and normally wait for it to close on its own. A case that fails first exits
+# through fail(), which used to leave that watcher running against a state
+# directory the cleanup trap was about to delete. Register each one here instead,
+# so the suite reaps exactly the pids it started - never a broad pattern kill,
+# which would reach sibling firstmate homes.
+
+FM_TEST_REAPED_PIDS=()
+
+fm_test_register_pid() {  # <pid>
+  [ -n "${1:-}" ] || return 0
+  FM_TEST_REAPED_PIDS+=("$1")
+}
+
+fm_test_reap_registered() {
+  local pid i
+  for pid in "${FM_TEST_REAPED_PIDS[@]:-}"; do
+    [ -n "$pid" ] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    kill -TERM "$pid" 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 100 ] && kill -0 "$pid" 2>/dev/null; do
+      sleep 0.05
+      i=$((i + 1))
+    done
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+  FM_TEST_REAPED_PIDS=()
+}
 
 # --- fakebin / PATH shims ---------------------------------------------------
 #

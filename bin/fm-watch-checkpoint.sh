@@ -51,9 +51,20 @@ ERR=$(mktemp "${TMPDIR:-/tmp}/fm-watch-checkpoint.err.XXXXXX") || {
 }
 trap 'rm -f "$OUT" "$ERR"' EXIT
 
+# Seconds the fallback below waits for a TERMed watcher to finish its own
+# cleanup before escalating to KILL. The watcher releases its singleton lock
+# from an EXIT trap, and that release has been measured taking a third of a
+# second on an idle machine and over a second on a loaded one, so a short grace
+# kills it mid-cleanup and strands the lock for the whole stale-lock window.
+# GNU timeout, the preferred path above, sends TERM and then simply waits; this
+# grace exists only so a genuinely wedged watcher still dies.
+PERL_TIMEOUT_KILL_GRACE=${FM_CHECKPOINT_KILL_GRACE:-30}
+
 run_with_perl_timeout() {
   perl -e '
+    use POSIX ();
     my $seconds = shift;
+    my $grace = shift;
     my $pid = fork;
     die "fork failed\n" unless defined $pid;
     if (!$pid) {
@@ -63,14 +74,22 @@ run_with_perl_timeout() {
     }
     local $SIG{ALRM} = sub {
       kill "TERM", -$pid;
-      select undef, undef, undef, 0.2;
+      # Match GNU timeout: give the child its own exit path instead of racing
+      # it. Poll rather than blocking in waitpid so the KILL backstop below
+      # still fires for a child that never responds to TERM.
+      my $waited = 0;
+      while ($waited < $grace) {
+        exit 124 if waitpid($pid, POSIX::WNOHANG()) == $pid;
+        select undef, undef, undef, 0.05;
+        $waited += 0.05;
+      }
       kill "KILL", -$pid;
       exit 124;
     };
     alarm $seconds;
     waitpid $pid, 0;
     exit($? >> 8);
-  ' "$SECONDS_ARG" "$SCRIPT_DIR/fm-watch.sh"
+  ' "$SECONDS_ARG" "$PERL_TIMEOUT_KILL_GRACE" "$SCRIPT_DIR/fm-watch.sh"
 }
 
 set +e
