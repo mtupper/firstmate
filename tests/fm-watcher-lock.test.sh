@@ -100,6 +100,54 @@ test_stale_watch_lock_reclaimed() {
   pass "killed watcher stale lock is reclaimed"
 }
 
+test_signal_during_recovery_arming_releases_the_lock() {
+  local dir state fakebin out holder pid i lock_pid
+  dir=$(make_case arming-signal)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mark_pr_check_migration_complete "$state"
+
+  # Park a real watcher inside recovery-marker arming: that section waits on the
+  # wake-queue lock first, and a lock held by a live pid is never stolen. The
+  # watcher has already claimed .watch.lock under its own pid at that point, so
+  # this is the exact startup window a bounded checkpoint's timeout signal lands
+  # in. Signalling it there must hand the lock back, not leave a pid behind that
+  # no process answers for.
+  sleep 60 &
+  holder=$!
+  mkdir "$state/.wake-queue.lock"
+  printf '%s\n' "$holder" > "$state/.wake-queue.lock/pid"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
+  pid=$!
+  i=0
+  lock_pid=
+  while [ "$i" -lt 100 ]; do
+    lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+    [ "$lock_pid" = "$pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$lock_pid" = "$pid" ] || {
+    kill "$pid" "$holder" 2>/dev/null || true
+    fail "watcher did not claim its lock before recovery arming"
+  }
+
+  kill -TERM "$pid" 2>/dev/null || {
+    kill "$holder" 2>/dev/null || true
+    fail "could not signal the arming watcher"
+  }
+  wait "$pid" 2>/dev/null || true
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+
+  [ ! -e "$state/.watch.lock/pid" ] \
+    || fail "watcher signalled during recovery arming left lock pid $(cat "$state/.watch.lock/pid" 2>/dev/null || true) behind"
+  pass "a watcher signalled during recovery arming releases its claimed lock"
+}
+
 test_live_stale_watch_lock_is_actionable() {
   local dir state fakebin out err status
   dir=$(make_case live-stale-lock)
@@ -1104,6 +1152,7 @@ test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
 test_msys_pid_identity_uses_proc
 test_stale_watch_lock_reclaimed
 test_stale_watch_reclaim_publishes_before_clear
+test_signal_during_recovery_arming_releases_the_lock
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings
 test_lock_single_winner_under_concurrency
