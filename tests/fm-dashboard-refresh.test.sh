@@ -159,10 +159,12 @@ pass "an empty build is refused even when stale output survives from a previous 
 
 # --- overlapping runs: a live holder refuses, a dead one never blocks --------
 # The lock is the flock on data/dashboard-build/.lock named in the script's
-# header - part of its documented layout. A fixture holder takes it exactly as
-# the script does and keeps it while it lives; killing it must release it.
+# header - part of its documented layout. A fixture holder takes the same
+# flock and keeps it while it lives; killing it must release it. The holder
+# waits for the lock (no LOCK_NB) so the probe below, which grabs and releases
+# it on every poll, can never race the holder's one attempt into a failure.
 LOCKFILE="$HOME_A/data/dashboard-build/.lock"
-perl -e 'open(my $fh, ">>", $ARGV[0]) or exit 2; flock($fh, 6) or exit 3; sleep 60' "$LOCKFILE" &
+perl -e 'open(my $fh, ">>", $ARGV[0]) or exit 2; flock($fh, 2) or exit 3; sleep 60' "$LOCKFILE" &
 HOLDER=$!
 # Wait until the holder provably has the lock: a non-blocking probe stops
 # succeeding. The probe's own lock is released when the probe exits.
@@ -190,6 +192,13 @@ STATUS=$?
 printf '%s' "$OUT" | grep -q 'projects root' \
   || fail "the projects-root refusal should say why: $OUT"
 [ -e "$HOME_A/projects/dash/served" ] && fail "the refused publish dir was still created inside the clone"
+# A '..' past a nonexistent component must not survive resolution and let
+# mkdir -p re-expand it into the projects root behind the prefix guard.
+OUT=$(run --publish-dir "$HOME_A/data/missing/../../projects/dash/inner" 2>&1)
+STATUS=$?
+[ "$STATUS" -ne 0 ] || fail "a publish dir using '..' past a nonexistent component must be refused: $OUT"
+[ -e "$HOME_A/projects/dash/inner" ] && fail "the '..' publish dir was still created inside the clone"
+[ -e "$HOME_A/data/missing" ] && fail "the refused '..' publish dir left a partial path behind"
 OUT=$(run --publish-dir "$HOME_A/data/dashboard-build/build/served" 2>&1)
 STATUS=$?
 [ "$STATUS" -eq 2 ] || fail "publishing into the build checkout should be refused with exit 2, got $STATUS: $OUT"
@@ -199,7 +208,7 @@ STATUS=$?
 OUT=$(run --publish-dir '' 2>&1)
 STATUS=$?
 [ "$STATUS" -eq 2 ] || fail "--publish-dir with an empty value should die with exit 2, got $STATUS: $OUT"
-pass "a publish dir inside the projects root or the build checkout, or an empty one, is refused"
+pass "a publish dir that reaches the projects root or the build checkout, even via '..', or an empty one, is refused"
 
 # --- a reused checkout follows the clone selected this run -------------------
 fm_git_init_commit "$HOME_A/projects/dash2"

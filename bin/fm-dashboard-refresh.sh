@@ -102,9 +102,11 @@ WORK="$DATA/dashboard-build"
 # the projects root. The publish dir must also stay out of the build checkout,
 # where a later `git add` by anyone would commit fleet content.
 resolve_intent() {  # <path>: physical path the target would occupy once created
-  local p=$1 rest=
+  local p=$1 rest= leaf
   while [ ! -d "$p" ]; do
-    rest="/$(basename "$p")$rest"
+    leaf=$(basename "$p")
+    [ "$leaf" = .. ] && return 1
+    rest="/$leaf$rest"
     p=$(dirname "$p")
   done
   p=$(cd "$p" 2>/dev/null && pwd -P) || return 1
