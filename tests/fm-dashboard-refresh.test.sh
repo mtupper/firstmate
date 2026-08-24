@@ -6,8 +6,9 @@
 # recoverable, a failed generation, a failed build, and an empty build each
 # leaving the served page untouched, the overlap lock refusing a live holder
 # and reclaiming a dead one, the projects-root and build-checkout publish
-# refusals including the case-aliased spellings of both, and the project
-# clone staying byte-for-byte untouched throughout.
+# refusals including the case-aliased spellings of both, the refusal of a build
+# checkout that resolves into the clone, and the project clone staying
+# byte-for-byte untouched throughout.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -264,6 +265,45 @@ if ( cd "$TMP_ROOT" && mkdir -p case-probe/lower && [ -d case-probe/LOWER ] ); t
 else
   pass "skip: the test filesystem is case-sensitive, so a case alias reaches neither boundary"
 fi
+
+# --- a build checkout that resolves into the clone is refused ----------------
+# The build checkout is the one directory this script mutates - remote
+# set-url, fetch, checkout --force, pnpm install and pnpm build all land in
+# it - so a symlink planted at its name must not carry those writes into the
+# captain's clone. The run must refuse before any of them happens and leave
+# the clone exactly as it found it, uncommitted work included.
+SYM_DATA="$TMP_ROOT/symlink-data"
+mkdir -p "$SYM_DATA/dashboard-build"
+# The overridden data root feeds the generator too, so give it the same live
+# home state: without it the run would die generating the feed and never reach
+# the build checkout this case is about.
+cp "$HOME_A/data/projects.md" "$HOME_A/data/backlog.md" "$SYM_DATA/"
+ln -s "$HOME_A/projects/dash" "$SYM_DATA/dashboard-build/build"
+BEFORE_HEAD=$(git -C "$HOME_A/projects/dash" rev-parse HEAD)
+BEFORE_BRANCH=$(git -C "$HOME_A/projects/dash" rev-parse --abbrev-ref HEAD)
+BEFORE_URL=$(git -C "$HOME_A/projects/dash" remote get-url origin)
+printf '{"name": "fixture-dashboard", "uncommitted": true}\n' > "$HOME_A/projects/dash/package.json"
+BEFORE_PKG=$(cat "$HOME_A/projects/dash/package.json")
+OUT=$(FM_DATA_OVERRIDE="$SYM_DATA" run 2>&1)
+STATUS=$?
+[ "$STATUS" -eq 2 ] \
+  || fail "a build checkout resolving into the clone should be refused with exit 2, got $STATUS: $OUT"
+printf '%s' "$OUT" | grep -q 'projects root' \
+  || fail "the symlinked-build-checkout refusal should say why: $OUT"
+[ "$(cat "$HOME_A/projects/dash/package.json")" = "$BEFORE_PKG" ] \
+  || fail "the refused run destroyed uncommitted work in the clone"
+[ "$(git -C "$HOME_A/projects/dash" rev-parse --abbrev-ref HEAD)" = "$BEFORE_BRANCH" ] \
+  || fail "the refused run moved the clone off its branch"
+[ "$(git -C "$HOME_A/projects/dash" rev-parse HEAD)" = "$BEFORE_HEAD" ] \
+  || fail "the refused run moved the clone's HEAD"
+[ "$(git -C "$HOME_A/projects/dash" remote get-url origin)" = "$BEFORE_URL" ] \
+  || fail "the refused run rewrote the clone's origin URL"
+[ -e "$HOME_A/projects/dash/.output" ] \
+  && fail "the refused run left build output inside the clone"
+git -C "$HOME_A/projects/dash" checkout --quiet -- package.json
+[ -z "$(git -C "$HOME_A/projects/dash" status --porcelain)" ] \
+  || fail "the refused run left the clone dirty: $(git -C "$HOME_A/projects/dash" status --porcelain)"
+pass "a build checkout that resolves into the projects root is refused before it is written to"
 
 # --- a reused checkout follows the clone selected this run -------------------
 fm_git_init_commit "$HOME_A/projects/dash2"

@@ -96,8 +96,9 @@ CLONE="$PROJECTS/$PROJECT"
 WORK="$DATA/dashboard-build"
 
 # --- placement guards (AGENTS.md hard rule 1) -------------------------------
-# Both writable roots are guarded BEFORE they are created, so a refused path is
-# never brought into existence inside a clone. A path is resolved from its
+# EVERY root this script writes to - the work root, the build checkout inside
+# it, and the publish dir - is guarded BEFORE it is created, so a refused path
+# is never brought into existence inside a clone. A path is resolved from its
 # deepest EXISTING ancestor through getcwd (/bin/pwd -P, NOT the shell builtin,
 # which reports back the spelling the caller typed). getcwd reports the entry
 # names the filesystem itself stores, so a symlink, a '..', or a case or
@@ -112,7 +113,10 @@ WORK="$DATA/dashboard-build"
 # identity to compare against - so the guard runs twice: once before anything
 # is created, then again once the checkout's own directory is on disk, which is
 # still before the publish dir is created and before any feed, clone, build or
-# publish happens.
+# publish happens. The second pass is also what settles the checkout itself: a
+# symlink planted at the checkout's name resolves to wherever it points, and a
+# checkout that lands in the projects root is refused there, before any git or
+# pnpm command reaches it.
 physical_dir() {  # <existing dir>: the path the filesystem itself stores for it
   (cd "$1" 2>/dev/null && /bin/pwd -P)
 }
@@ -136,7 +140,7 @@ resolve_intent() {  # <path>: physical path the target would occupy once created
 PROJECTS_ROOT=$(physical_dir "$PROJECTS") || die "cannot resolve the projects root at $PROJECTS"
 guard_placement() {  # refuse the resolved roots wherever a write could reach a repository
   local dir
-  for dir in "$WORK" "$PUBLISH_DIR"; do
+  for dir in "$WORK" "$BUILD" "$PUBLISH_DIR"; do
     case "$dir" in
       "$PROJECTS_ROOT"|"$PROJECTS_ROOT"/*)
         die "refusing to write inside the projects root ($PROJECTS_ROOT); firstmate does not write to projects" 2
