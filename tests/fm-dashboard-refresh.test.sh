@@ -6,7 +6,7 @@
 # recoverable, a failed generation, a failed build, and an empty build each
 # leaving the served page untouched, the overlap lock refusing a live holder
 # and reclaiming a dead one, the projects-root and build-checkout publish
-# refusals, and the project
+# refusals including the case-aliased spellings of both, and the project
 # clone staying byte-for-byte untouched throughout.
 set -u
 
@@ -221,6 +221,49 @@ OUT=$(run --publish-dir '' 2>&1)
 STATUS=$?
 [ "$STATUS" -eq 2 ] || fail "--publish-dir with an empty value should die with exit 2, got $STATUS: $OUT"
 pass "a publish dir that reaches the projects root or the build checkout, even via '..' or '.', or an empty one, is refused"
+
+# --- a case alias of an existing directory reaches neither boundary ----------
+# On a case-insensitive filesystem the caller's spelling names the SAME
+# directory the guard protects, so resolution has to report the name the
+# filesystem stores rather than the one that was typed. Where the filesystem
+# is case-sensitive the alias names a different directory and there is nothing
+# to close, so the case is skipped instead of asserted.
+if ( cd "$TMP_ROOT" && mkdir -p case-probe/lower && [ -d case-probe/LOWER ] ); then
+  OUT=$(run --publish-dir "$HOME_A/Projects/dash/served" 2>&1)
+  STATUS=$?
+  [ "$STATUS" -eq 2 ] \
+    || fail "a case-aliased projects-root publish dir should be refused with exit 2, got $STATUS: $OUT"
+  printf '%s' "$OUT" | grep -q 'projects root' \
+    || fail "the case-aliased projects-root refusal should say why: $OUT"
+  [ -e "$HOME_A/projects/dash/served" ] \
+    && fail "the case-aliased publish dir was still created inside the clone"
+  [ -z "$(git -C "$HOME_A/projects/dash" status --porcelain)" ] \
+    || fail "the case-aliased publish left content in the clone"
+
+  # The build checkout does not exist yet on a fresh work root, so only the
+  # on-disk identity of the checkout the script creates can settle this.
+  CASE_DATA="$TMP_ROOT/case-data"
+  mkdir -p "$CASE_DATA"
+  OUT=$(FM_DATA_OVERRIDE="$CASE_DATA" run --publish-dir "$CASE_DATA/dashboard-build/Build" 2>&1)
+  STATUS=$?
+  [ "$STATUS" -eq 2 ] \
+    || fail "a case-aliased build-checkout publish dir should be refused with exit 2, got $STATUS: $OUT"
+  printf '%s' "$OUT" | grep -q 'build checkout' \
+    || fail "the case-aliased build-checkout refusal should say why: $OUT"
+  [ -e "$CASE_DATA/dashboard-build/build/index.html" ] \
+    && fail "the refused case-aliased publish wrote a page into the build checkout"
+  # Steady state: the checkout is on disk now, and a third spelling of it must
+  # still be refused.
+  OUT=$(FM_DATA_OVERRIDE="$CASE_DATA" run --publish-dir "$CASE_DATA/dashboard-build/BUILD" 2>&1)
+  STATUS=$?
+  [ "$STATUS" -eq 2 ] \
+    || fail "a case-aliased build-checkout publish dir should stay refused once the checkout exists, got $STATUS: $OUT"
+  [ -e "$CASE_DATA/dashboard-build/build/index.html" ] \
+    && fail "the refused case-aliased publish wrote a page into the existing build checkout"
+  pass "a publish dir reaching the projects root or the build checkout through a case alias is refused"
+else
+  pass "skip: the test filesystem is case-sensitive, so a case alias reaches neither boundary"
+fi
 
 # --- a reused checkout follows the clone selected this run -------------------
 fm_git_init_commit "$HOME_A/projects/dash2"

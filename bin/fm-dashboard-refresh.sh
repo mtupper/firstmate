@@ -97,12 +97,27 @@ WORK="$DATA/dashboard-build"
 
 # --- placement guards (AGENTS.md hard rule 1) -------------------------------
 # Both writable roots are guarded BEFORE they are created, so a refused path is
-# never brought into existence inside a clone. Each is resolved physically from
-# its deepest existing ancestor, so a symlink or .. cannot walk a write into
-# the projects root. The publish dir must also stay out of the build checkout,
-# where a later `git add` by anyone would commit fleet content.
+# never brought into existence inside a clone. A path is resolved from its
+# deepest EXISTING ancestor through getcwd (/bin/pwd -P, NOT the shell builtin,
+# which reports back the spelling the caller typed). getcwd reports the entry
+# names the filesystem itself stores, so a symlink, a '..', or a case or
+# unicode alias of an existing directory is already canonical before any prefix
+# is compared; only a remainder that exists nowhere on disk is carried through
+# as written, and such a remainder cannot alias its way out of an ancestor that
+# is already inside the protected tree.
+#
+# The publish dir must also stay out of the build checkout, where a later
+# `git add` by anyone would commit fleet content. That checkout may not exist
+# yet on a fresh work root, and a name that does not exist has no on-disk
+# identity to compare against - so the guard runs twice: once before anything
+# is created, then again once the checkout's own directory is on disk, which is
+# still before the publish dir is created and before any feed, clone, build or
+# publish happens.
+physical_dir() {  # <existing dir>: the path the filesystem itself stores for it
+  (cd "$1" 2>/dev/null && /bin/pwd -P)
+}
 resolve_intent() {  # <path>: physical path the target would occupy once created
-  local p=$1 rest= leaf
+  local p=$1 rest='' leaf
   while [ ! -d "$p" ]; do
     leaf=$(basename "$p")
     case "$leaf" in
@@ -112,30 +127,41 @@ resolve_intent() {  # <path>: physical path the target would occupy once created
     esac
     p=$(dirname "$p")
   done
-  p=$(cd "$p" 2>/dev/null && pwd -P) || return 1
+  p=$(physical_dir "$p") || return 1
   printf '%s%s\n' "${p%/}" "$rest"
 }
-WORK=$(resolve_intent "$WORK") || die "cannot resolve the work root at $WORK"
-PUBLISH_DIR=$(resolve_intent "$PUBLISH_DIR") || die "cannot resolve the publish dir at $PUBLISH_DIR"
-if projects_dir=$(cd "$PROJECTS" 2>/dev/null && pwd -P); then
+# The projects root certainly exists by now - the clone under it was checked
+# above - so failing to resolve it is an error, never a reason to skip the
+# guard that depends on it.
+PROJECTS_ROOT=$(physical_dir "$PROJECTS") || die "cannot resolve the projects root at $PROJECTS"
+guard_placement() {  # refuse the resolved roots wherever a write could reach a repository
+  local dir
   for dir in "$WORK" "$PUBLISH_DIR"; do
     case "$dir" in
-      "$projects_dir"|"$projects_dir"/*)
-        die "refusing to write inside the projects root ($projects_dir); firstmate does not write to projects" 2
+      "$PROJECTS_ROOT"|"$PROJECTS_ROOT"/*)
+        die "refusing to write inside the projects root ($PROJECTS_ROOT); firstmate does not write to projects" 2
         ;;
     esac
   done
-fi
-case "$PUBLISH_DIR" in
-  "$WORK/build"|"$WORK/build"/*)
-    die "refusing to publish inside the build checkout; fleet content must never reach a repository" 2
-    ;;
-esac
+  case "$PUBLISH_DIR" in
+    "$BUILD"|"$BUILD"/*)
+      die "refusing to publish inside the build checkout; fleet content must never reach a repository" 2
+      ;;
+  esac
+}
 
+WORK=$(resolve_intent "$WORK") || die "cannot resolve the work root at $WORK"
+PUBLISH_DIR=$(resolve_intent "$PUBLISH_DIR") || die "cannot resolve the publish dir at $PUBLISH_DIR"
 BUILD="$WORK/build"
+guard_placement
+
 FEED="$WORK/feed.json"
 LOCKFILE="$WORK/.lock"
 mkdir -p "$WORK" || die "cannot create the work root at $WORK"
+mkdir -p "$BUILD" || die "cannot create the build checkout at $BUILD"
+BUILD=$(resolve_intent "$BUILD") || die "cannot resolve the build checkout at $BUILD"
+PUBLISH_DIR=$(resolve_intent "$PUBLISH_DIR") || die "cannot resolve the publish dir at $PUBLISH_DIR"
+guard_placement
 mkdir -p "$PUBLISH_DIR" || die "cannot create the publish dir at $PUBLISH_DIR"
 
 # --- overlap guard ----------------------------------------------------------
