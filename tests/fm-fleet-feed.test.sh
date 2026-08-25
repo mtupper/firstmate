@@ -3,9 +3,11 @@
 #
 # Covers a fully populated project, a sparse one carrying only the five required
 # fields, the absent-versus-empty distinction the renderer draws differently, the
-# always-omitted sections firstmate has no source for, the projects-root write
-# refusal, and every malformed source failing loudly WITHOUT replacing a good
-# feed with a partial one.
+# always-omitted sections firstmate has no source for, the registry's lifecycle
+# declarations (precedence over the derived reading, the declared-dormant
+# contradiction, the archived stripping, and the refusals), the projects-root
+# write refusal, and every malformed source failing loudly WITHOUT replacing a
+# good feed with a partial one.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -142,15 +144,15 @@ printf 'blocked [key=creds]: the deploy credential is rejected\n' > "$HOME_A/sta
 FEED_A=$(run "$HOME_A" "$FAKEBIN_A" --stdout) || fail "generating the home-a feed failed"
 
 # --- the document itself ----------------------------------------------------
-printf '%s' "$FEED_A" | jq -e '.contractVersion | test("^1\\.[0-9]+\\.[0-9]+$")' >/dev/null \
-  || fail "contractVersion is not in the 1.x range the renderer accepts"
+printf '%s' "$FEED_A" | jq -e '.contractVersion == "2.0.0"' >/dev/null \
+  || fail "contractVersion should be 2.0.0, the four-state contract"
 printf '%s' "$FEED_A" | jq -e '.generatedAt == "2026-07-11T18:00:00Z"' >/dev/null \
   || fail "generatedAt does not carry the observation time"
 printf '%s' "$FEED_A" | jq -e '.projects | length == 3' >/dev/null \
   || fail "expected the three registered projects"
 printf '%s' "$FEED_A" | jq -e '[.projects[].id] | (unique | length) == length' >/dev/null \
   || fail "project ids are not unique"
-pass "the document carries a 1.x contract version, the observation time and unique ids"
+pass "the document carries the 2.0.0 contract version, the observation time and unique ids"
 
 R=$(printf '%s' "$FEED_A" | jq '.projects[] | select(.id == "rich")')
 
@@ -167,6 +169,8 @@ printf '%s' "$R" | jq -e '.executiveSummary.metrics | length == 6' >/dev/null \
   || fail "rich should carry its six derived metrics"
 printf '%s' "$R" | jq -e '[.executiveSummary.metrics[] | select(.label == "Landed")][0].value == "1"' >/dev/null \
   || fail "the landed metric should count the one done item"
+printf '%s' "$R" | jq -e '.items == 7' >/dev/null \
+  || fail "rich should count its seven recorded work items: $(printf '%s' "$R" | jq -c '.items')"
 printf '%s' "$R" | jq -e '.currentStatus.signals | length >= 4' >/dev/null \
   || fail "rich should carry its checkable signals"
 printf '%s' "$R" | jq -e '[.currentStatus.signals[] | select(.label == "Local copy")][0]
@@ -244,6 +248,8 @@ printf '%s' "$P_A" | jq -e '[has("repo"), has("updatedAt"), has("executiveSummar
   || fail "a project with no clone and no records must omit what it cannot ground"
 printf '%s' "$P_A" | jq -e '.decisions == [] and .blockers == [] and .captainTasks == [] and .agentTasks == []' >/dev/null \
   || fail "with a readable backlog, a project with nothing open reports empty, not absent"
+printf '%s' "$P_A" | jq -e '.items == 0' >/dev/null \
+  || fail "with a readable backlog, a project with nothing recorded counts zero items, not absent"
 pass "a sparse project carries the required five and reports empty where it checked"
 
 # --- absent is not empty ----------------------------------------------------
@@ -261,6 +267,8 @@ P_B=$(printf '%s' "$FEED_B" | jq '.projects[] | select(.id == "sparse")')
 printf '%s' "$P_B" | jq -e '[has("decisions"), has("blockers"), has("captainTasks"), has("agentTasks")]
                             | all(. == false)' >/dev/null \
   || fail "an unreadable backlog must leave the queue-derived fields absent, not empty"
+printf '%s' "$P_B" | jq -e 'has("items") | not' >/dev/null \
+  || fail "an unreadable backlog must leave the item count absent, never a zero"
 printf '%s' "$P_B" | jq -e '[keys[]] | sort == ["headline", "health", "id", "name", "order", "status"]' >/dev/null \
   || fail "with no backlog the entry should be the required five plus its sort key: $(printf '%s' "$P_B" | jq -c 'keys')"
 printf '%s' "$P_A" | jq -e 'has("blockers") and (.blockers | length) == 0' >/dev/null \
@@ -574,6 +582,70 @@ printf '%s' "$FEED_D" | jq -e '[.projects[] | select(.status == "dormant")]
   || fail "projects tied on rank and date should be ordered by name: $(printf '%s' "$FEED_D" | jq -c '[.projects[] | {id, order}]')"
 pass "projects tied on evidence and date are ordered by name, not against it"
 
+# --- home E: lifecycle declarations ------------------------------------------
+# A declaration always wins over the derived reading; a declared-dormant
+# project with in-flight work reports the contradiction plainly; an archived
+# project keeps its identity and reason and drops the heavy sections.
+HOME_E=$(new_home home-e)
+FAKEBIN_E=$(make_fakebin "$HOME_E")
+
+cat > "$HOME_E/data/projects.md" <<'EOF'
+# Projects
+
+- alive [local-only] - Nothing declared, an in-flight item derives it active (added 2026-07-01)
+- steady [local-only] [stable] - Declared stable while recent activity would derive active (added 2026-07-01)
+- snoozed [local-only] [dormant] - Declared dormant while an item is in flight (added 2026-07-01)
+- hushed [local-only] [dormant] - Declared dormant with nothing recorded (added 2026-07-01)
+- closed [local-only] [archived: superseded by steady, 1 Jul 2026] - Declared archived with an open item left behind (added 2026-07-01)
+EOF
+
+cat > "$HOME_E/data/backlog.md" <<'EOF'
+## In flight
+- [ ] alive-ship - Ship the alive thing (repo: alive) (kind: ship) (since 2026-07-08)
+- [ ] snoozed-ship - Ship the snoozed thing (repo: snoozed) (kind: ship) (since 2026-07-08)
+
+## Queued
+- [ ] closed-hold - Decide the leftover (repo: closed) (kind: captain) (since 2026-07-01) (hold: the captain must decide the leftover) (hold-kind: captain)
+
+## Done
+- [x] steady-landed - Landed the steady thing (repo: steady) (kind: ship) (merged 2026-07-10)
+EOF
+
+FEED_E=$(run "$HOME_E" "$FAKEBIN_E" --stdout) || fail "generating the home-e feed failed"
+
+ST=$(printf '%s' "$FEED_E" | jq '.projects[] | select(.id == "steady")')
+printf '%s' "$ST" | jq -e '.status == "stable"' >/dev/null \
+  || fail "a declared stable project must not be re-derived active: $(printf '%s' "$ST" | jq -c '{status,updatedAt}')"
+printf '%s' "$ST" | jq -e '.updatedAt == "2026-07-10"' >/dev/null \
+  || fail "the steady fixture must actually carry activity inside the window, or this test proves nothing"
+printf '%s' "$ST" | jq -e 'has("statusReason") | not' >/dev/null \
+  || fail "a declaration without a reason must not invent one"
+pass "a declared stable project with recent activity stays stable: the declaration wins"
+
+SN=$(printf '%s' "$FEED_E" | jq '.projects[] | select(.id == "snoozed")')
+printf '%s' "$SN" | jq -e '.status == "dormant"' >/dev/null \
+  || fail "a declared dormant project must not be re-derived active: $(printf '%s' "$SN" | jq -c '.status')"
+printf '%s' "$SN" | jq -e '.headline | contains("declared dormant") and contains("in flight") and contains("disagree")' >/dev/null \
+  || fail "declared dormant with in-flight work must report the contradiction plainly: $(printf '%s' "$SN" | jq -c '.headline')"
+HU=$(printf '%s' "$FEED_E" | jq '.projects[] | select(.id == "hushed")')
+printf '%s' "$HU" | jq -e '.status == "dormant" and (.headline | contains("disagree") | not)' >/dev/null \
+  || fail "declared dormant with no work in flight has nothing to contradict: $(printf '%s' "$HU" | jq -c '{status,headline}')"
+pass "a declared-dormant project reports the contradiction only when work is actually in flight"
+
+CL=$(printf '%s' "$FEED_E" | jq '.projects[] | select(.id == "closed")')
+printf '%s' "$CL" | jq -e '.status == "archived" and .statusReason == "superseded by steady, 1 Jul 2026"' >/dev/null \
+  || fail "an archived project must carry its declared reason: $(printf '%s' "$CL" | jq -c '{status,statusReason}')"
+printf '%s' "$CL" | jq -e '[has("decisions"), has("blockers"), has("captainTasks"), has("agentTasks")]
+                           | all(. == false)' >/dev/null \
+  || fail "an archived project must drop decisions, blockers and the task lists: $(printf '%s' "$CL" | jq -c 'keys')"
+printf '%s' "$CL" | jq -e '.items == 1' >/dev/null \
+  || fail "an archived project still counts its recorded items: $(printf '%s' "$CL" | jq -c '.items')"
+pass "an archived project keeps its identity and reason and drops the heavy sections"
+
+printf '%s' "$FEED_E" | jq -e '[.projects[].status] == ["active", "stable", "dormant", "dormant", "archived"]' >/dev/null \
+  || fail "sections must come out active, stable, dormant, archived: $(printf '%s' "$FEED_E" | jq -c '[.projects[].status]')"
+pass "the four sections come out in the renderer's order"
+
 # --- firstmate never writes into a project ----------------------------------
 GOOD="$TMP_ROOT/good-feed.json"
 run "$HOME_A" "$FAKEBIN_A" --out "$GOOD" >/dev/null || fail "writing a feed to a normal path failed"
@@ -653,6 +725,14 @@ mutate_duplicate() {
   printf -- '- rich [local-only] - A second entry for the same project (added 2026-07-02)\n' \
     >> "$1/data/projects.md"
 }
+mutate_declared_active() {
+  printf -- '- badactive [local-only] [active] - Declares the state activity already proves (added 2026-07-01)\n' \
+    >> "$1/data/projects.md"
+}
+mutate_bad_declaration() {
+  printf -- '- baddecl [local-only] [retired] - A lifecycle no rule defines (added 2026-07-01)\n' \
+    >> "$1/data/projects.md"
+}
 
 refuses "a missing project registry is refused, not reported as an empty fleet" \
   "no project registry at" mutate_no_registry
@@ -664,5 +744,9 @@ refuses "a project name that cannot be a feed id is refused" \
   "not a usable feed id" mutate_bad_name
 refuses "a duplicate registry entry is refused" \
   "duplicate registry entry" mutate_duplicate
+refuses "a declared active lifecycle is refused, naming the line" \
+  'registry line for "badactive" declares [active]' mutate_declared_active
+refuses "an unparseable lifecycle declaration is refused" \
+  'unparseable lifecycle declaration "[retired]"' mutate_bad_declaration
 
 echo "ok - fm-fleet-feed"
