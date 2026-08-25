@@ -33,6 +33,36 @@
 # whole feed, matching how a malformed registry line is already treated. No
 # bracket means derive active/dormant from the recency window, as before.
 #
+# SECOND MATES. Work routed to a registered secondmate lives in that mate's own
+# home, so this home's backlog and task records cannot see it. The snapshot's
+# secondmate_current records carry each readable mate's durable work with
+# per-item project attribution, and this projection folds that work into the
+# owning project's card: MERGED by default, because the captain thinks in
+# projects, not in who does the work. The fold is expressed entirely inside the
+# existing dashboard contract - mate items raise the same counts, metrics,
+# decisions, blockers, tasks and headline branches as this home's own work - so
+# no contract change is needed. The distinction stays available rather than
+# prominent: a "Second mate" signal names the mate and its share, and folded
+# decisions, blockers and tasks name the mate in their supporting text.
+# The fold is read-only toward the mate homes and reads only what the snapshot
+# already collected. A mate summary reports a held in-flight item on both its
+# in-flight and its queued surface, so the fold deduplicates and counts each item
+# once, on its state, and reads that item's hold the same way this home reads its
+# own.
+#
+# Disclosure, so a quiet card never silently hides routed work. A mate that could
+# not be read leaves evidence of a home but none of work, so it is disclosed on
+# every project the fleet records it serving. A mate that was only partially read
+# is disclosed where its own rows land. A mate whose records predate per-project
+# reporting, and rows a bounded read cut off, are work this home knows exists but
+# cannot place on any project - those rows are precisely the ones whose project is
+# unknown, so they are disclosed on EVERY card rather than guessed onto a subset,
+# and an otherwise empty card says so instead of claiming nothing is recorded.
+# None of those is fatal: refusing the whole feed because one remote mate has not
+# self-updated would blind every other project's card. Only a mate reporting
+# per-project attribution and still naming no project for an item is fatal,
+# exactly like this home's own unattributable work.
+#
 # READ-ONLY toward projects. It reads clones under projects/ and writes only the
 # feed, and it REFUSES an output path inside the projects root (AGENTS.md hard
 # rule 1). It makes no network call, takes no lock, and mutates no fleet state.
@@ -58,6 +88,8 @@
 #   - a declared `active` lifecycle, or an unparseable lifecycle bracket
 #   - a structured backlog row with no repo, or an unattributable free-form row
 #     in the current sections (real work the feed would silently drop)
+#   - a second mate that reports per-project attribution and still names no
+#     project for an item, or a mate outside the snapshot's own read window
 #   - an output path inside the projects root
 #
 # Usage:
@@ -345,17 +377,26 @@ clone_facts_json() {  # <project-name...>
   printf '%s' "$acc"
 }
 
-# The feed covers every registered project plus every repository the backlog or
-# a live task actually names. Dropping an unregistered repository would hide
-# real work behind a registration gap, which is the confident lie this feed is
-# meant to prevent; it is disclosed per project instead.
+# The feed covers every registered project plus every repository the backlog, a
+# live task, or a readable second mate's work actually names, plus the projects
+# a mate that needs disclosure serves. Dropping an unregistered repository would
+# hide real work behind a registration gap, which is the confident lie this feed
+# is meant to prevent; it is disclosed per project instead.
 NAMES=$(jq -r -n \
   --argjson reg "$REGISTRY_JSON" \
   --argjson snap "$SNAP" '
   ([$reg[].name]
    + [$snap.backlog.records[]? | select(.structured) | .repo // empty]
    + [$snap.tasks[]? | select(.kind != "secondmate")
-      | (.backlog.repo // ((.project // "") | split("/") | last) // empty)])
+      | (.backlog.repo // ((.project // "") | split("/") | last) // empty)]
+   + [$snap.secondmate_current.records[]? | select(.provenance.selected == "structured-home")
+      | ((.in_flight // [])[], (.queued // [])[], (.landed // [])[], (.decisions_open // [])[])
+      | .repo // empty]
+   + [$snap.secondmate_current.records[]?
+      | select((.provenance.selected != "structured-home")
+               or (.provenance.summary_valid != true)
+               or (.in_flight == null))
+      | (.projects // [])[]])
   | map(select(. != null and . != "")) | unique | .[]')
 [ -n "$NAMES" ] || die "no projects found in the registry, the backlog or live task records"
 
@@ -392,7 +433,52 @@ def trunc($n):
   else (tostring | gsub("\\s+"; " ")
         | if length > $n then (.[:$n - 1] + "…") else . end)
   end;
-def question: trunc(199) | if endswith("?") then . else . + "?" end;
+# Free text copied from internal records - hold reasons, worker status lines -
+# is written for firstmate, not the captain. Before any of it reaches a
+# captain-facing field: drop every sentence that points at an internal record
+# path, and truncate on a sentence boundary rather than mid-word or mid-path.
+# The marker (U+001F) replaces each path token before the sentence split, so a
+# dot inside a file name cannot masquerade as a sentence boundary. A quoting
+# backtick delimits the token like any other quote, and the token stops before
+# the trailing terminator so the pointer sentence still ends where it ended.
+# A terminator only ends a sentence when whitespace or the end of the text
+# follows it, so a dot inside a token (a version, an id, a file name) never
+# splits that token in half.
+def sentences:
+  [match("(?:[^.!?]|[.!?](?!\\s|$))+[.!?]*|[.!?]+"; "g").string
+   | gsub("^ +| +$"; "")]
+  | map(select(length > 0));
+def word_trunc($n):
+  .[:$n - 1] | if test(" ") then sub(" [^ ]*$"; "") else . end | . + "…";
+def trunc_sentence($n):
+  if . == null then null
+  else (tostring | gsub("\\s+"; " ")
+        | if length <= $n then .
+          else . as $whole
+             | (sentences
+                | reduce .[] as $s ({txt: "", full: false};
+                    if .full then .
+                    else ((if .txt == "" then $s else .txt + " " + $s end) as $cand
+                          | if ($cand | length) <= $n then .txt = $cand
+                            else .full = true end)
+                    end)
+                | .txt) as $kept
+             | if $kept == "" then ($whole | word_trunc($n)) else $kept end
+          end)
+  end;
+def captain_text($n):
+  if . == null then null
+  else (tostring | gsub("\\s+"; " ")
+        | gsub("(?<pre>^|[\\s(\\[\"\\x{27}\\x{60}.])(\\./)?(data|state)/(?:[^\\s)\\]\"\\x{27}\\x{60}]*[^\\s)\\]\"\\x{27}\\x{60}.,;:!?])?"; "\(.pre)\u001f")
+        | gsub("\\s*[(\\[][^()\\[\\]]*\\x{1f}[^()\\[\\]]*[)\\]]"; "")
+        | sentences
+        | map(select(contains("\u001f") | not))
+        | join(" ")
+        | if . == "" then null else trunc_sentence($n) end)
+  end;
+def question:
+  (captain_text(198) // "A decision is waiting")
+  | if endswith("?") then . else . + "?" end;
 def clean:
   if type == "object" then with_entries(select(.value != null)) | with_entries(.value |= clean)
   elif type == "array" then map(clean)
@@ -425,6 +511,15 @@ def order_section:
   group_by(.rank)
   | map(sort_by(.name) | group_by(.last_date // "") | reverse | add // []) | add // []
   | to_entries | map(.value + {order: .key});
+# A mate summary bounds several surfaces, only four of which carry work this feed
+# folds. Truncating the other surfaces costs the feed nothing, so a disclosure
+# that fired on them would be a false alarm on an otherwise complete card.
+def work_surface: (.surface | IN("in_flight", "queued", "landed", "decisions_open"));
+# The card is read by the captain, so an omitted surface is named in the words
+# the rest of the card uses, never by its record field name.
+def surface_words:
+  {"in_flight": "in flight", "queued": "queued", "landed": "landed",
+   "decisions_open": "waiting on a decision"}[.surface] // .surface;
 
 . as $snap
 | ($names | split("\n") | map(select(. != ""))) as $names
@@ -433,6 +528,16 @@ def order_section:
 | ($snap.backlog.present) as $backlog_present
 | ([$snap.tasks[]? | select(.kind != "secondmate")]) as $live
 | ($snap.main_inventory.orphan_in_flight // []) as $orphans
+| ($snap.secondmate_current.records // []) as $mates
+| ([$mates[] | select(.provenance.selected == "structured-home")]) as $mates_read
+| ([$mates[] | select(.provenance.selected != "structured-home")]) as $mates_unread
+# A mate whose summary predates per-item project attribution reports no in_flight
+# surface at all, and none of its rows can carry a repo. Its work is DISCLOSED,
+# never folded and never fatal: refusing the whole feed because one remote mate
+# has not self-updated yet would blind every other card in the feed, which is the
+# failure this feed exists to prevent.
+| ([$mates_read[] | select(.in_flight != null)]) as $mates_folded
+| ([$mates_read[] | select(.in_flight == null)]) as $mates_blind
 
 # --- fatal source problems, collected before anything is emitted ------------
 | ([ $registry | group_by(.name)[] | select(length > 1)
@@ -441,7 +546,15 @@ def order_section:
        | "backlog item \(.id) records no repo, so its work cannot be attributed to a project" ]
    + (if ($snap.main_inventory.unstructured_current_count // 0) > 0
       then ["\($snap.main_inventory.unstructured_current_count) free-form row(s) in the current backlog sections cannot be attributed to a project; the feed would silently drop that work"]
-      else [] end)) as $problems
+      else [] end)
+   + (if ($snap.secondmate_current.truncated // 0) > 0
+      then ["\($snap.secondmate_current.truncated) second mate(s) fall outside the snapshot window (FM_SNAPSHOT_SECONDMATES); their work would be silently invisible"]
+      else [] end)
+   + ([ $mates_folded[] | . as $m
+        | ((.in_flight // [])[], (.queued // [])[], (.landed // [])[], (.decisions_open // [])[])
+        | select((.repo // "") == "")
+        | "the \($m.id) second mate records work that names no project (\(.id // "unnamed item")); the feed would silently drop that work" ]
+      | unique)) as $problems
 
 | if ($problems | length) > 0 then {problems: $problems, feed: null} else
 
@@ -452,6 +565,101 @@ def order_section:
    | ($clone[$name] // {read:"absent"}) as $c
    | ([$snap.backlog.records[]? | select(.structured and .repo == $name)]) as $recs
    | ([$live[] | select(proj_of == $name)]) as $tasks
+
+   # --- the work carried by the second mates serving this project -----------
+   # Read from the structured mate records in the snapshot, never from mate chat.
+   | ([ $mates_folded[] | . as $m | (.in_flight // [])[]
+        | select(.repo == $name) | . + {mate:$m.id} ]) as $m_inflight
+   # A mate summary reports a HELD in-flight item on BOTH its in_flight and its
+   # queued surface, because in_flight is the state of the item while queued is
+   # its current role. Fold it once, on its state, so a single item is never
+   # counted as both in flight and queued the way rows from this home never are.
+   | ([$m_inflight[] | "\(.mate) \(.id)"]) as $m_inflight_keys
+   | ([ $mates_folded[] | . as $m | (.queued // [])[]
+        | select(.repo == $name) | . + {mate:$m.id}
+        | ("\(.mate) \(.id)") as $k
+        | select(($m_inflight_keys | index($k)) == null) ]) as $m_queued
+   | ([ $mates_folded[] | . as $m | (.landed // [])[]
+        | select(.repo == $name) | . + {mate:$m.id} ]) as $m_landed
+   | ([ $mates_folded[] | . as $m | (.decisions_open // [])[]
+        | select(.repo == $name) | . + {mate:$m.id} ]) as $m_dec_all
+   # The holds carried by those deduplicated in-flight rows. This home reads the
+   # same holds straight off its own in-flight rows, so read them here too rather
+   # than losing them along with the duplicate.
+   | ($m_inflight | map(select(.hold_reason != null and .hold_kind != null))) as $m_inflight_held
+   | ($m_dec_all | map(select(.verb == "blocked"))) as $m_blocked
+   | (($m_dec_all | map(select(.verb != "blocked")))
+      + ($m_inflight_held | map(select(.hold_kind == "captain")
+          | {id, key: .id, verb: "captain-hold", summary: .title,
+             reason: .hold_reason, mate}))) as $m_decisions
+   | ($m_inflight | map(select(.child_state == "working"))) as $m_working
+   # The same raised-PR rule as this home: a running worker may be mid-CI, so
+   # only a not-working item with a PR is offered to the captain.
+   | ([$m_inflight[] | select((.pr_url // "") != "" and .child_state != "working")]) as $m_open_prs
+   | ($m_queued | map(select((.unresolved_blocker_ids // []) | length > 0))) as $m_gated
+   | (($m_queued | map(select(((.unresolved_blocker_ids // []) | length) == 0
+        and .hold_reason != null and ((.hold_kind // "") != "captain"))))
+      + ($m_inflight_held | map(select((.hold_kind // "") != "captain")))) as $m_other_holds
+   | ($m_queued | map(select(((.unresolved_blocker_ids // []) | length) == 0
+        and .hold_reason == null and ((.hold_kind // "") != "captain")
+        and ((.captain_actionable // false) | not)))) as $m_ready
+   | (($m_inflight | length) + ($m_queued | length) + ($m_landed | length)) as $m_items
+   | ([$m_inflight[].mate, $m_queued[].mate, $m_landed[].mate, $m_dec_all[].mate] | unique) as $m_ids
+
+   # --- mates that owe this project a disclosure -----------------------------
+   # A quiet card must never silently hide routed work.
+   # A mate this home could not reach at all leaves no evidence of work, only of
+   # a home, so it is disclosed against the projects the fleet records it serving.
+   | ([ $mates_unread[] | select((.projects // []) | index($name)) ]) as $m_unread_here
+   | ([ $mates_folded[] | select(.provenance.summary_valid != true)
+        | select(((.projects // []) | index($name))
+                 or ([((.in_flight // [])[], (.queued // [])[], (.landed // [])[], (.decisions_open // [])[])
+                     | .repo] | index($name))) ]) as $m_partial_here
+   # Work this home knows exists but CANNOT place on any project: rows from a
+   # summary that predates per-project reporting, and rows the bounded read cut
+   # off. Those rows are precisely the ones whose project is unknown, so the only
+   # honest placement is every card; guessing a subset would leave the silent
+   # card this fold exists to remove. Both disclose, neither is fatal.
+   | ([ $mates_blind[]
+        | (([(.queued // [])[], (.landed // [])[], (.decisions_open // [])[]]) | length) as $n
+        | select($n > 0) | {mate: .id, items: $n} ]) as $m_blind_here
+   | ([ $mates_folded[] | . as $m
+        | ((.omitted // []) | map(select(work_surface)))
+        | select(length > 0) | {mate: $m.id, omitted: .} ]) as $m_truncated_here
+   | ((($m_blind_here | length) + ($m_truncated_here | length)) > 0) as $m_unplaced
+   | ((if $m_items > 0 then
+        [{label: "Second mate",
+          value: ("with \($m_ids | join(", ")): \($m_inflight | length) under way, \($m_queued | length) queued, \($m_landed | length) landed"
+                  | trunc(120)),
+          state: (if ($m_blocked | length) > 0 then "bad"
+                  elif ($m_decisions | length) + ($m_gated | length) + ($m_other_holds | length) > 0 then "watch"
+                  else "good" end),
+          evidence: ("Durable records of \($m_ids | join(", ")): \([($m_inflight + $m_queued + $m_landed)[].id] | join(", "))."
+                     | trunc(300))}]
+      else [] end)
+      + [ $m_unread_here[]
+        | {label: "Second mate",
+           value: ("the \(.id) mate could not be read" | trunc(120)),
+           state: "unknown",
+           evidence: ((.current.reason // "no readable record") | trunc(300))} ]
+      + [ $m_partial_here[]
+        | {label: "Second mate",
+           value: ("activity from the \(.id) mate may be incomplete" | trunc(120)),
+           state: "unknown",
+           evidence: ((.current.reason // "its records could not be fully read") | trunc(300))} ]
+      + [ $m_blind_here[]
+        | {label: "Second mate",
+           value: ("work with the \(.mate) mate cannot be placed on a project" | trunc(120)),
+           state: "unknown",
+           evidence: ("Its records predate per-project reporting, so \(.items | n("item is"; "items are")) counted on no card here. Update that mate to a current firstmate."
+                      | trunc(300))} ]
+      + [ $m_truncated_here[]
+        | {label: "Second mate",
+           value: ("the \(.mate) mate carries more work than this feed could read" | trunc(120)),
+           state: "unknown",
+           evidence: ("Past the bounded read and counted on no card here: "
+                      + ([.omitted[] | "\(.count) more \(surface_words)"] | join(", ")) + "."
+                      | trunc(300))} ]) as $m_signals
    | ($recs | map(select(.state == "in_flight"))) as $inflight
    | ($recs | map(select(.state == "queued"))) as $queued
    | ($recs | map(select(.state == "done"))) as $done
@@ -478,11 +686,13 @@ def order_section:
                          and .current_state.state != "working")]) as $open_prs
    | ($inflight | map(select(.id as $i | $orphans | index($i)))) as $orphaned
    | ([$recs[] | (.since | dateof), (.completion.date | dateof)]
+      + [$m_inflight[] | (.since | dateof)]
+      + [$m_landed[] | (.completion.date | dateof)]
       | map(select(. != null)) | sort | last) as $last_date
-   | ($done | map(select((.completion.date | isdate)))
+   | (($done + $m_landed) | map(select((.completion.date | isdate)))
       | sort_by(.completion.date) | last) as $last_landed
 
-   | (if ($inflight | length) > 0 then true
+   | (if ($inflight | length) + ($m_inflight | length) > 0 then true
       elif ($working | length) > 0 then true
       elif ($last_date != null and $last_date >= $cutoff) then true
       else false end) as $is_active
@@ -490,43 +700,61 @@ def order_section:
    # A declaration always wins over the derived reading (the script header owns
    # the declaration rules). A declared-dormant project with in-flight work is a
    # contradiction the feed must report plainly rather than quietly believing
-   # either side; the contradiction takes the headline below.
+   # either side; the contradiction takes the headline below. Folded second-mate
+   # work counts here exactly like work recorded in this home: the card speaks
+   # for the project, not for whichever home happens to hold the item.
    | ($r.declared // null) as $declared
    | (if $declared != null then $declared
       elif $is_active then "active"
       else "dormant" end) as $status
-   | (if $declared == "dormant" and (($inflight | length) > 0 or ($working | length) > 0)
+   | (($inflight | length) + ($m_inflight | length)) as $contradicting_inflight
+   | (($working | length) + ($m_working | length)) as $contradicting_working
+   | (if $declared == "dormant"
+        and ($contradicting_inflight > 0 or $contradicting_working > 0)
       then ("This project is declared dormant, but "
-            + (if ($inflight | length) > 0
-               then ($inflight | length | n("item is"; "items are")) + " in flight"
-               else ($working | length | n("worker is"; "workers are")) + " running" end)
+            + (if $contradicting_inflight > 0
+               then ($contradicting_inflight | n("item is"; "items are")) + " in flight"
+               else ($contradicting_working | n("worker is"; "workers are")) + " running" end)
             + "; the declaration and the recorded work disagree.")
       else null end) as $dormant_contradiction
 
-   | (if ($live_blocked | length) > 0 or ($stopped | length) > 0 then "blocked"
-      elif ($open | length) > 0 and ($open | all(held)) then "blocked"
+   | (if ($live_blocked | length) > 0 or ($stopped | length) > 0
+        or ($m_blocked | length) > 0 then "blocked"
+      elif ($open | length) > 0 and ($open | all(held))
+           and ($m_inflight | length) == 0 and ($m_ready | length) == 0 then "blocked"
       elif ($captain_holds | length) > 0 or ($live_decisions | length) > 0
            or ($gated | length) > 0 or ($other_holds | length) > 0
+           or ($m_decisions | length) > 0 or ($m_gated | length) > 0
+           or ($m_other_holds | length) > 0
            or ($orphaned | length) > 0 then "at-risk"
-      elif ($recs | length) == 0 then "not-started"
-      elif ($is_active | not) and ($open | length) > 0 then "paused"
+      elif ($recs | length) == 0 and $m_items == 0 then "not-started"
+      elif ($is_active | not)
+           and (($open | length) > 0 or ($m_inflight | length) + ($m_queued | length) > 0) then "paused"
       else "on-track" end) as $health
 
-   | (if ($working | length) > 0 then 0
-      elif ($inflight | length) > 0 then 1
-      elif ($captain_holds | length) > 0 or ($live_decisions | length) > 0 then 2
-      elif ($queued | length) > 0 then 3
-      elif ($done | length) > 0 then 4
+   | (if ($working | length) + ($m_working | length) > 0 then 0
+      elif ($inflight | length) + ($m_inflight | length) > 0 then 1
+      elif ($captain_holds | length) > 0 or ($live_decisions | length) > 0
+           or ($m_decisions | length) > 0 then 2
+      elif ($queued | length) + ($m_queued | length) > 0 then 3
+      elif ($done | length) + ($m_landed | length) > 0 then 4
       else 5 end) as $rank
 
    # --- headline: the single most pressing grounded fact --------------------
+   | (($captain_holds | length) + ($m_decisions | length)) as $captain_wait_n
    | (if $dormant_contradiction != null then $dormant_contradiction
-      elif ($recs | length) == 0 then
-        (if (($r.desc // "") != "") then $r.desc
+      elif ($recs | length) == 0 and $m_items == 0 then
+        # An empty card may not claim nothing is recorded while a second mate
+        # holds work this home read but could not place on any project.
+        (if $m_unplaced then
+           "No work is recorded here, and a second mate holds work this home could not place."
+         elif (($r.desc // "") != "") then $r.desc
          else "No work is recorded for this project." end
          | sub(" *\\((added|corrected|updated)[^()]*\\)$"; ""))
       elif ($live_blocked | length) > 0 then
-        "Work has stopped: \($live_blocked[0].summary)"
+        "Work has stopped: \(($live_blocked[0].summary | captain_text(160)) // "a worker reported itself blocked")"
+      elif ($m_blocked | length) > 0 then
+        "Work has stopped with the \($m_blocked[0].mate) second mate: \(($m_blocked[0].summary | captain_text(160)) // "a worker reported itself blocked")"
       elif ($stopped | length) > 0 then
         "\($stopped[0].id) is recorded in flight, but its worker is no longer running."
       elif $health == "blocked" then
@@ -536,22 +764,26 @@ def order_section:
       elif ($drifted | length) > 0 then
         "\($drifted[0].id) has finished, but the backlog still records it in flight."
       elif ($inflight | length) > 0 then
-        "Under way: \($inflight[0].title)"
-        + (if ($captain_holds | length) > 0
-           then ", and \($captain_holds | length | n("decision waits"; "decisions wait")) on the captain." else "." end)
-      elif ($captain_holds | length) > 0 then
-        "\($captain_holds | length | n("decision waits"; "decisions wait")) on the captain; nothing is dispatched."
-      elif ($queued | length) > 0 then
-        "\($queued | length | n("item is"; "items are")) queued and nothing is dispatched"
+        "Under way: \((($inflight[0].title | captain_text(160)) // $inflight[0].id))"
+        + (if $captain_wait_n > 0
+           then ", and \($captain_wait_n | n("decision waits"; "decisions wait")) on the captain." else "." end)
+      elif ($m_inflight | length) > 0 then
+        "Under way with the \($m_inflight[0].mate) second mate: \((($m_inflight[0].title | captain_text(160)) // $m_inflight[0].id))"
+        + (if $captain_wait_n > 0
+           then ", and \($captain_wait_n | n("decision waits"; "decisions wait")) on the captain." else "." end)
+      elif $captain_wait_n > 0 then
+        "\($captain_wait_n | n("decision waits"; "decisions wait")) on the captain; nothing is dispatched."
+      elif ($queued | length) + ($m_queued | length) > 0 then
+        "\(($queued | length) + ($m_queued | length) | n("item is"; "items are")) queued and nothing is dispatched"
         + (if $last_landed != null then "; \($last_landed.id) landed \($last_landed.completion.date)." else "." end)
       elif $last_landed != null then
         "Nothing is open. \($last_landed.id) landed \($last_landed.completion.date)."
-      else "Nothing is open." end | trunc(200)) as $headline
+      else "Nothing is open." end | trunc_sentence(200)) as $headline
 
    # --- decisions the captain owns -----------------------------------------
    | ([ $captain_holds[]
         | {question: (.title | question),
-           why: (.hold_reason | trunc(400)),
+           why: (.hold_reason | captain_text(400)),
            owner: "captain",
            urgency: (if .state == "in_flight" then "now"
                      elif .captain_actionable then "soon"
@@ -565,6 +797,19 @@ def order_section:
         | {question: ("Should \(.pr.url) land?" | trunc(199)),
            owner: "captain",
            urgency: (if run_finished then "soon" else "later" end)}
+      ] + [ $m_decisions[]
+        | {question: (.summary | question),
+           why: ((if .verb == "captain-hold"
+                  then ((.reason | captain_text(400))
+                        // "A hold with the \(.mate) second mate awaits the captain.")
+                  else "A worker with the \(.mate) second mate is parked until this is answered." end)
+                 | trunc(400)),
+           owner: "captain",
+           urgency: (if .verb == "needs-decision" then "now" else "soon" end)}
+      ] + [ $m_open_prs[]
+        | {question: ("Should \(.pr_url) land?" | trunc(199)),
+           owner: "captain",
+           urgency: "later"}
       ]
       | sort_by(if .urgency == "now" then 0 elif .urgency == "soon" then 1 else 2 end))
       as $decisions_all
@@ -575,7 +820,7 @@ def order_section:
 
    # --- what is actually stopping progress ----------------------------------
    | ([ $live_blocked[]
-        | {title: (.summary | trunc(160)),
+        | {title: ((.summary | captain_text(160)) // "a worker reported itself blocked"),
            detail: ("The worker on \(.task) reported itself blocked and is waiting for help." | trunc(500)),
            severity: "critical", owner: "agents",
            unblockedBy: "Firstmate unblocking the worker or reassigning the work."}
@@ -593,8 +838,8 @@ def order_section:
            severity: "minor", owner: "shared",
            unblockedBy: "Marking the item done in the backlog."}
       ] + [ $captain_holds[] | select(.state == "in_flight")
-        | {title: (.title | trunc(160)),
-           detail: (.hold_reason | trunc(500)),
+        | {title: ((.title | captain_text(160)) // .id),
+           detail: (.hold_reason | captain_text(500)),
            severity: "critical", owner: "captain",
            since: ((.since | dateof) | trunc(60)),
            unblockedBy: "The captain answering this hold."}
@@ -604,16 +849,31 @@ def order_section:
            since: ((.since | dateof) | trunc(60)),
            unblockedBy: "Dispatching it or returning it to the queue."}
       ] + [ $gated[]
-        | {title: (.title | trunc(160)),
+        | {title: ((.title | captain_text(160)) // .id),
            detail: ("Waiting on \(.unresolved_blocker_ids | join(", "))." | trunc(500)),
            severity: "major", owner: "agents",
            since: ((.since | dateof) | trunc(60)),
            unblockedBy: ("\(.unresolved_blocker_ids | join(", ")) landing first." | trunc(300))}
       ] + [ $other_holds[]
-        | {title: (.title | trunc(160)),
-           detail: (.hold_reason | trunc(500)),
+        | {title: ((.title | captain_text(160)) // .id),
+           detail: (.hold_reason | captain_text(500)),
            severity: "major", owner: "shared",
            since: ((.since | dateof) | trunc(60)),
+           unblockedBy: "The hold reason clearing."}
+      ] + [ $m_blocked[]
+        | {title: ((.summary | captain_text(160)) // "a worker reported itself blocked"),
+           detail: ("A worker with the \(.mate) second mate reported itself blocked and is waiting for help." | trunc(500)),
+           severity: "critical", owner: "agents",
+           unblockedBy: "The second mate unblocking the worker or reassigning the work."}
+      ] + [ $m_gated[]
+        | {title: ((.title | captain_text(160)) // .id),
+           detail: ("Waiting on \((.unresolved_blocker_ids // []) | join(", ")) with the \(.mate) second mate." | trunc(500)),
+           severity: "major", owner: "agents",
+           unblockedBy: ("\((.unresolved_blocker_ids // []) | join(", ")) landing first." | trunc(300))}
+      ] + [ $m_other_holds[]
+        | {title: ((.title | captain_text(160)) // .id),
+           detail: ((.hold_reason | captain_text(500)) // "held"),
+           severity: "major", owner: "shared",
            unblockedBy: "The hold reason clearing."}
       ]
       | sort_by(if .severity == "critical" then 0 elif .severity == "major" then 1 else 2 end))
@@ -627,32 +887,46 @@ def order_section:
                   then "The work is finished and waiting for the captain to say whether it lands."
                   else null end) | trunc(300))}
       ] + [ $captain_holds[] | select(.state == "in_flight")
-        | {title: (.title | trunc(160)),
-           detail: (.hold_reason | trunc(400)),
+        | {title: ((.title | captain_text(160)) // .id),
+           detail: (.hold_reason | captain_text(400)),
            why: ("Work on \(.id) is stopped until this is answered." | trunc(300))}
       ] + [ $captain_holds[] | select(.state != "in_flight")
-        | {title: (.title | trunc(160)),
-           detail: (.hold_reason | trunc(400)),
+        | {title: ((.title | captain_text(160)) // .id),
+           detail: (.hold_reason | captain_text(400)),
            why: (if .captain_actionable
                  then "It is queued with nothing gating it, so it can be answered now."
                  else "It is queued behind other work." end | trunc(300))}
+      ] + [ $m_open_prs[]
+        | {title: ("Decide on \(.pr_url)" | trunc(160))}
+      ] + [ $m_decisions[]
+        | {title: ((.summary | captain_text(160)) // .id),
+           detail: (.reason | captain_text(400)),
+           why: ("It waits with the \(.mate) second mate." | trunc(300))}
       ] | .[:3]) as $captain_tasks
 
    | ([ $ready[]
-        | {title: (.title | trunc(160)),
-           detail: (.body_excerpt | trunc(400)),
+        | {title: ((.title | captain_text(160)) // .id),
+           detail: (.body_excerpt | captain_text(400)),
            why: ((if (.priority // "") != "" then "Queued at priority \(.priority) " else "Queued " end)
                  + "with nothing gating it." | trunc(300)),
            order_priority: (.priority // "99"),
            order_since: (.since // "9999-99-99")}
+      ] + [ $m_ready[]
+        | {title: ((.title | captain_text(160)) // .id),
+           why: ("Queued with the \(.mate) second mate with nothing gating it." | trunc(300)),
+           order_priority: "99",
+           order_since: "9999-99-99"}
       ] | sort_by([.order_priority, .order_since])
         | map(del(.order_priority, .order_since))
         | .[:3]) as $agent_tasks
 
    # --- checkable facts behind the summary ----------------------------------
    | ([ {label: "Dispatched work",
-         value: (if ($working | length) > 0 then ($working | length | n("worker running"; "workers running"))
-                 elif ($inflight | length) == 0 then "nothing dispatched"
+         value: (if ($working | length) + ($m_working | length) > 0
+                   then (($working | length) + ($m_working | length) | n("worker running"; "workers running"))
+                 elif ($inflight | length) + ($m_inflight | length) == 0 then "nothing dispatched"
+                 elif ($inflight | length) == 0
+                   then ($m_inflight | length | n("item under way with a second mate"; "items under way with second mates"))
                  elif ($tasks | length) == 0
                    then ($inflight | length | n("item in flight, no worker"; "items in flight, no worker"))
                  elif ($stopped | length) > 0
@@ -662,10 +936,11 @@ def order_section:
                  else ($inflight | length | n("item in flight, worker state not reported"; "items in flight, worker state not reported"))
                  end | trunc(120)),
          state: (if ($stopped | length) > 0 or ($orphaned | length) > 0 then "bad"
-                 elif ($working | length) > 0 then "good"
+                 elif ($working | length) + ($m_working | length) > 0 then "good"
                  elif ($inflight | length) > 0 and ($tasks | length) > 0 and ($drifted | length) == 0
                    then "unknown"
-                 elif ($queued | length) > 0 then "watch"
+                 elif ($inflight | length) == 0 and ($m_inflight | length) > 0 then "watch"
+                 elif ($queued | length) + ($m_queued | length) > 0 then "watch"
                  else "good" end),
          evidence: (if ($tasks | length) > 0
                     then ("Task records: \([$tasks[].id] | join(", "))." | trunc(300))
@@ -678,10 +953,12 @@ def order_section:
                     then ("Held items: \([$captain_holds[].id] | join(", "))." | trunc(300))
                     else null end)},
         {label: "Items waiting on other work",
-         value: (if ($gated | length) > 0 then ($gated | length | n("item gated"; "items gated")) else "none gated" end | trunc(120)),
-         state: (if ($gated | length) > 0 then "watch" else "good" end),
-         evidence: (if ($gated | length) > 0
-                    then ("Waiting on \([$gated[].unresolved_blocker_ids[]] | unique | join(", "))." | trunc(300))
+         value: (if ($gated | length) + ($m_gated | length) > 0
+                 then (($gated | length) + ($m_gated | length) | n("item gated"; "items gated"))
+                 else "none gated" end | trunc(120)),
+         state: (if ($gated | length) + ($m_gated | length) > 0 then "watch" else "good" end),
+         evidence: (if ($gated | length) + ($m_gated | length) > 0
+                    then ("Waiting on \([$gated[].unresolved_blocker_ids[], ($m_gated[].unresolved_blocker_ids // [])[]] | unique | join(", "))." | trunc(300))
                     else null end)},
         {label: "Local copy",
          value: (if $c.read == "ok"
@@ -696,9 +973,10 @@ def order_section:
          # directory layout of the machine that generated it.
          evidence: (if $c.path == null then null
                     else ($c.path | split("/") | .[-2:] | join("/") | trunc(300)) end)}
-      ] + (if $r == null then
+      ] + $m_signals
+      + (if $r == null then
         [{label: "Project registry", value: "not registered", state: "watch",
-          evidence: "Named by backlog items or live task records but absent from data/projects.md."}]
+          evidence: "Named by backlog items, live task records or second mate work but absent from data/projects.md."}]
         else [] end)
       | .[:10]) as $signals
 
@@ -719,9 +997,12 @@ def order_section:
        items: (if $backlog_present then ($recs | length) else null end),
        repo: ($c.repo | trunc(200)),
 
-       executiveSummary: (if ($recs | length) == 0 then null else {
-         lede: ("\($name) has \($recs | length | n("item"; "items")) recorded: "
-                + "\($inflight | length) in flight, \($queued | length) queued, \($done | length) landed. "
+       executiveSummary: (if ($recs | length) == 0 and $m_items == 0 then null else {
+         lede: ("\($name) has \((($recs | length) + $m_items) | n("item"; "items")) recorded: "
+                + "\(($inflight | length) + ($m_inflight | length)) in flight, \(($queued | length) + ($m_queued | length)) queued, \(($done | length) + ($m_landed | length)) landed. "
+                + (if $m_items > 0
+                   then "Of these, \($m_items | n("item is"; "items are")) with \(if ($m_ids | length) == 1 then "the \($m_ids[0]) second mate" else "second mates \($m_ids | join(", "))" end). "
+                   else "" end)
                 + (if ($decisions_all | length) > 0
                    then "\($decisions_all | length | n("decision waits"; "decisions wait")) on the captain. " else "No decision waits on the captain. " end)
                 + (if ($blockers_all | length) > 0
@@ -729,10 +1010,10 @@ def order_section:
                 + (if $last_date != null then "Last activity \($last_date)." else "No dated activity recorded." end)
                 | trunc(600)),
          metrics: [
-           {label: "In flight", value: ($inflight | length | tostring),
-            tone: (if ($stopped | length) > 0 then "bad" elif ($working | length) > 0 then "good" else "neutral" end)},
-           {label: "Queued", value: ($queued | length | tostring), tone: "neutral"},
-           {label: "Landed", value: ($done | length | tostring), tone: "good"},
+           {label: "In flight", value: (($inflight | length) + ($m_inflight | length) | tostring),
+            tone: (if ($stopped | length) > 0 then "bad" elif ($working | length) + ($m_working | length) > 0 then "good" else "neutral" end)},
+           {label: "Queued", value: (($queued | length) + ($m_queued | length) | tostring), tone: "neutral"},
+           {label: "Landed", value: (($done | length) + ($m_landed | length) | tostring), tone: "good"},
            {label: "Captain decisions", value: ($decisions_all | length | tostring),
             tone: (if ($decisions_all | length) > 0 then "warn" else "good" end)},
            {label: "Stopping progress", value: ($blockers_all | length | tostring),
@@ -741,7 +1022,8 @@ def order_section:
          ]
        } end),
 
-       currentStatus: (if ($recs | length) == 0 and $c.read == "absent" and $r != null then null else {
+       currentStatus: (if ($recs | length) == 0 and $c.read == "absent" and $r != null
+                          and $m_items == 0 and ($m_signals | length) == 0 then null else {
          summary: ($headline
                    + (if $r != null and ($r.mode // "") != ""
                       then " Registered delivery posture: \($r.mode), autonomy \($r.yolo // "off")."

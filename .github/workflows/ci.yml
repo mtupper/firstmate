@@ -372,8 +372,8 @@ jobs:
           feed_output=$(/bin/bash tests/fm-fleet-feed.test.sh)
           printf '%s\n' "$feed_output"
           feed_count=$(printf '%s\n' "$feed_output" | grep -c '^ok - ')
-          [ "$feed_count" -eq 36 ] || {
-            echo "::error::expected 36 fleet-feed tests, got $feed_count"
+          [ "$feed_count" -eq 47 ] || {
+            echo "::error::expected 47 fleet-feed tests, got $feed_count"
             exit 1
           }
 

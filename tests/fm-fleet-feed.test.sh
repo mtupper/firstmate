@@ -588,7 +588,6 @@ pass "projects tied on evidence and date are ordered by name, not against it"
 # project keeps its identity and reason and drops the heavy sections.
 HOME_E=$(new_home home-e)
 FAKEBIN_E=$(make_fakebin "$HOME_E")
-
 cat > "$HOME_E/data/projects.md" <<'EOF'
 # Projects
 
@@ -645,6 +644,451 @@ pass "an archived project keeps its identity and reason and drops the heavy sect
 printf '%s' "$FEED_E" | jq -e '[.projects[].status] == ["active", "stable", "dormant", "dormant", "archived"]' >/dev/null \
   || fail "sections must come out active, stable, dormant, archived: $(printf '%s' "$FEED_E" | jq -c '[.projects[].status]')"
 pass "the four sections come out in the renderer's order"
+
+# --- home M: a project whose work lives entirely in a second mate home ------
+# The registered home carries the work; this home's backlog has no row for the
+# project at all. The card must still show the real work, merged by default.
+HOME_M=$(new_home home-m)
+FAKEBIN_M=$(make_fakebin "$HOME_M")
+MATE_M="$TMP_ROOT/mate-m-home"
+mkdir -p "$MATE_M/data" "$MATE_M/state" "$MATE_M/config" "$MATE_M/projects/matework" "$MATE_M/bin"
+printf '# Firstmate fixture\n' > "$MATE_M/AGENTS.md"
+printf 'mate-m\n' > "$MATE_M/.fm-secondmate-home"
+cat > "$HOME_M/data/projects.md" <<'EOF'
+# Projects
+
+- matework [no-mistakes] - Its work is routed to the mate-m second mate (added 2026-07-01)
+EOF
+cat > "$HOME_M/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+
+## Done
+EOF
+printf -- '- mate-m - The matework mate (home: %s; scope: everything matework; projects: matework; added 2026-07-01)\n' \
+  "$MATE_M" > "$HOME_M/data/secondmates.md"
+fm_write_secondmate_meta "$HOME_M/state/mate-m.meta" "$MATE_M" "firstmate:fm-mate-m" matework
+
+cat > "$MATE_M/data/backlog.md" <<'EOF'
+## In flight
+- [ ] me-ship - Ship the mate thing (repo: matework) (kind: ship) (since 2026-07-09)
+- [ ] me-landing - Land the mate pull request (repo: matework) (kind: ship) (since 2026-07-08)
+
+## Queued
+- [ ] me-captain - Approve the outward copy (repo: matework) (kind: captain) (hold: the copy goes to real users) (hold-kind: captain)
+- [ ] me-gated - Wire the exporter blocked-by: me-missing (repo: matework) (since 2026-07-08)
+- [ ] me-ready - Add the importer (repo: matework) (since 2026-07-08)
+
+## Done
+- [x] me-landed - Landed the groundwork https://github.com/acme/matework/pull/4 (repo: matework) (kind: ship) (merged 2026-07-10)
+EOF
+fm_write_meta "$MATE_M/state/me-ship.meta" \
+  "window=firstmate:fm-me-ship" \
+  "worktree=$MATE_M/projects/matework" "project=$MATE_M/projects/matework" \
+  "harness=claude" "kind=ship" "mode=no-mistakes"
+record_claude_state "$MATE_M/state" me-ship busy
+printf 'working: building it\n' > "$MATE_M/state/me-ship.status"
+# A worker parked at a gate with an open pull request: real current work that
+# active-worker views alone would hide.
+fm_write_meta "$MATE_M/state/me-landing.meta" \
+  "window=firstmate:fm-me-landing" \
+  "worktree=$MATE_M/projects/matework" "project=$MATE_M/projects/matework" \
+  "harness=claude" "kind=ship" "mode=no-mistakes" \
+  "pr=https://github.com/acme/matework/pull/9"
+record_claude_state "$MATE_M/state" me-landing idle
+printf 'needs-decision [key=copy]: which wording should the banner use\n' \
+  > "$MATE_M/state/me-landing.status"
+
+FEED_M=$(run "$HOME_M" "$FAKEBIN_M" --stdout) || fail "generating the home-m feed failed"
+M=$(printf '%s' "$FEED_M" | jq '.projects[] | select(.id == "matework")')
+
+printf '%s' "$M" | jq -e '.status == "active"' >/dev/null \
+  || fail "a project whose mate is working it is active, not dormant: $(printf '%s' "$M" | jq -c '{status,headline}')"
+printf '%s' "$M" | jq -e '[.executiveSummary.metrics[] | select(.label == "In flight")][0].value == "2"' >/dev/null \
+  || fail "the in-flight metric must count the mate items: $(printf '%s' "$M" | jq -c '.executiveSummary.metrics')"
+printf '%s' "$M" | jq -e '[.executiveSummary.metrics[] | select(.label == "Queued")][0].value == "3"' >/dev/null \
+  || fail "the queued metric must count the mate items"
+printf '%s' "$M" | jq -e '[.executiveSummary.metrics[] | select(.label == "Landed")][0].value == "1"' >/dev/null \
+  || fail "the landed metric must count the mate items"
+printf '%s' "$M" | jq -e '.executiveSummary.lede | contains("with the mate-m second mate")' >/dev/null \
+  || fail "the lede must keep the distinction available: $(printf '%s' "$M" | jq -c '.executiveSummary.lede')"
+printf '%s' "$M" | jq -e '.headline | startswith("Under way with the mate-m second mate: Ship the mate thing")' >/dev/null \
+  || fail "the headline should lead with the running mate work: $(printf '%s' "$M" | jq -c '.headline')"
+printf '%s' "$M" | jq -e '.updatedAt == "2026-07-10"' >/dev/null \
+  || fail "mate activity must date the card: $(printf '%s' "$M" | jq -c '.updatedAt')"
+pass "a project worked only by a second mate reads as active with real merged counts"
+
+printf '%s' "$M" | jq -e '[.decisions[] | select(.question == "Approve the outward copy?")] | length == 1' >/dev/null \
+  || fail "a mate captain hold is the captain's decision: $(printf '%s' "$M" | jq -c '.decisions')"
+printf '%s' "$M" | jq -e '[.decisions[] | select(.question | contains("pull/9"))] | length == 1' >/dev/null \
+  || fail "a mate pull request on a parked worker should reach the captain: $(printf '%s' "$M" | jq -c '.decisions')"
+printf '%s' "$M" | jq -e '[.decisions[] | select(.urgency == "now" and (.why | contains("mate-m second mate")))] | length == 1' >/dev/null \
+  || fail "a mate worker parked on a question is a decision now: $(printf '%s' "$M" | jq -c '.decisions')"
+printf '%s' "$M" | jq -e '[.blockers[] | select(.title == "Wire the exporter")][0]
+                          | .detail | contains("with the mate-m second mate")' >/dev/null \
+  || fail "a mate-gated item should be a blocker naming the mate: $(printf '%s' "$M" | jq -c '.blockers')"
+printf '%s' "$M" | jq -e '[.agentTasks[] | select(.title == "Add the importer")][0]
+                          | .why | contains("mate-m second mate")' >/dev/null \
+  || fail "a mate queued-and-ready item is dispatchable work: $(printf '%s' "$M" | jq -c '.agentTasks')"
+printf '%s' "$M" | jq -e '[.currentStatus.signals[] | select(.label == "Second mate")][0]
+                          | (.value | contains("mate-m")) and (.state != "unknown")' >/dev/null \
+  || fail "the second-mate signal should carry the mate share: $(printf '%s' "$M" | jq -c '.currentStatus.signals')"
+printf '%s' "$M" | jq -e '[.currentStatus.signals[] | select(.label == "Dispatched work")][0].value == "1 worker running"' >/dev/null \
+  || fail "a running mate worker counts as dispatched work: $(printf '%s' "$M" | jq -c '.currentStatus.signals')"
+printf '%s' "$FEED_M" | jq -e --arg home "$MATE_M" 'tostring | contains($home) | not' >/dev/null \
+  || fail "no part of the feed may carry the mate home path"
+pass "mate decisions, blockers, tasks and signals fold in, named but not separated"
+
+# --- a lifecycle declaration and folded mate work meet on one card ---------
+# The declaration still wins over the derived reading, and folded second-mate
+# work is this project's own work: a project declared dormant while its mate
+# carries an item in flight must report the contradiction, not read quietly
+# dormant because this home holds no row for it.
+HOME_N=$(new_home home-n)
+FAKEBIN_N=$(make_fakebin "$HOME_N")
+MATE_N="$TMP_ROOT/mate-n-home"
+mkdir -p "$MATE_N/data" "$MATE_N/state" "$MATE_N/config" "$MATE_N/projects/napwork" "$MATE_N/bin"
+printf '# Firstmate fixture\n' > "$MATE_N/AGENTS.md"
+printf 'mate-n\n' > "$MATE_N/.fm-secondmate-home"
+cat > "$HOME_N/data/projects.md" <<'EOF'
+# Projects
+
+- napwork [no-mistakes] [dormant] - Declared dormant while its mate carries the work (added 2026-07-01)
+EOF
+printf '## In flight\n\n## Queued\n\n## Done\n' > "$HOME_N/data/backlog.md"
+printf -- '- mate-n - The napwork mate (home: %s; scope: everything napwork; projects: napwork; added 2026-07-01)\n' \
+  "$MATE_N" > "$HOME_N/data/secondmates.md"
+fm_write_secondmate_meta "$HOME_N/state/mate-n.meta" "$MATE_N" "firstmate:fm-mate-n" napwork
+cat > "$MATE_N/data/backlog.md" <<'EOF'
+## In flight
+- [ ] mn-ship - Ship the nap thing (repo: napwork) (kind: ship) (since 2026-07-09)
+
+## Queued
+- [ ] mn-hold - Choose the nap format (repo: napwork) (kind: captain) (since 2026-07-09) (hold: The captain must pick the nap format. Full record in data/decisions/2026-07-09-nap.md) (hold-kind: captain)
+
+## Done
+EOF
+fm_write_meta "$MATE_N/state/mn-ship.meta" \
+  "window=firstmate:fm-mn-ship" \
+  "worktree=$MATE_N/projects/napwork" "project=$MATE_N/projects/napwork" \
+  "harness=claude" "kind=ship" "mode=no-mistakes"
+record_claude_state "$MATE_N/state" mn-ship busy
+
+FEED_N=$(run "$HOME_N" "$FAKEBIN_N" --stdout) || fail "generating the home-n feed failed"
+N=$(printf '%s' "$FEED_N" | jq '.projects[] | select(.id == "napwork")')
+printf '%s' "$N" | jq -e '.status == "dormant"' >/dev/null \
+  || fail "a declaration must keep winning once mate work is folded in: $(printf '%s' "$N" | jq -c '{status,headline}')"
+printf '%s' "$N" | jq -e '[.executiveSummary.metrics[] | select(.label == "In flight")][0].value == "1"' >/dev/null \
+  || fail "the fixture must actually fold a mate item, or this test proves nothing: $(printf '%s' "$N" | jq -c '.executiveSummary.metrics')"
+printf '%s' "$N" | jq -e '.headline | contains("declared dormant") and contains("in flight") and contains("disagree")' >/dev/null \
+  || fail "mate work in flight must contradict a dormant declaration: $(printf '%s' "$N" | jq -c '.headline')"
+pass "folded second-mate work contradicts a dormant declaration like a local row"
+
+# A mate hold reason is internal record text exactly like this home's own, so it
+# passes the same filter on its way into a captain-facing field.
+printf '%s' "$N" | jq -e 'tostring | test("(^|[^a-z])(data|state)/") | not' >/dev/null \
+  || fail "no internal record path may reach a card through folded mate work: $(printf '%s' "$N" | jq -c '{headline, decisions, blockers, captainTasks}')"
+printf '%s' "$N" | jq -e '[.decisions[] | select(.question == "Choose the nap format?")]
+                          | first.why == "The captain must pick the nap format."' >/dev/null \
+  || fail "a mate hold reason should keep the decision and drop the pointer: $(printf '%s' "$N" | jq -c '.decisions')"
+pass "folded mate text passes the same captain-facing filter as this home's own"
+
+# --- an unreadable mate is disclosed, never silently quiet ------------------
+# The registry names a mate whose home does not exist; its project is named only
+# by the parent record. The card must exist and carry the unknown disclosure.
+HOME_L=$(new_home home-l)
+FAKEBIN_L=$(make_fakebin "$HOME_L")
+cat > "$HOME_L/data/projects.md" <<'EOF'
+# Projects
+
+- placeholder [local-only] - Keeps the registry non-empty (added 2026-07-01)
+EOF
+cat > "$HOME_L/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+
+## Done
+EOF
+printf -- '- mate-x - The ghost mate (home: %s; scope: ghost things; projects: ghostwork; added 2026-07-01)\n' \
+  "$TMP_ROOT/nonexistent-mate-home" > "$HOME_L/data/secondmates.md"
+fm_write_secondmate_meta "$HOME_L/state/mate-x.meta" "$TMP_ROOT/nonexistent-mate-home" "firstmate:fm-mate-x" ghostwork
+
+FEED_L=$(run "$HOME_L" "$FAKEBIN_L" --stdout) || fail "generating the home-l feed failed"
+GW=$(printf '%s' "$FEED_L" | jq '.projects[] | select(.id == "ghostwork")')
+[ -n "$GW" ] || fail "a project served only by an unreadable mate must still get a card: $(printf '%s' "$FEED_L" | jq -c '[.projects[].id]')"
+printf '%s' "$GW" | jq -e '[.currentStatus.signals[] | select(.label == "Second mate")][0]
+                           | .state == "unknown" and (.value | contains("mate-x"))' >/dev/null \
+  || fail "an unreadable mate must be disclosed on its project: $(printf '%s' "$GW" | jq -c '.currentStatus.signals')"
+printf '%s' "$GW" | jq -e '.health == "not-started" and .headline == "No work is recorded for this project."' >/dev/null \
+  || fail "an unreadable mate discloses, it does not invent work: $(printf '%s' "$GW" | jq -c '{health,headline}')"
+pass "an unreadable second mate is disclosed on every project it serves"
+
+# --- mate work that names no project is refused, like this home's own -------
+# Appended after the Done heading, so the mate home stays structurally valid
+# and the row reaches the feed as landed work with no repository.
+printf -- '- [x] me-norepo - Work with no repository recorded (kind: ship) (merged 2026-07-09)\n' \
+  >> "$MATE_M/data/backlog.md"
+cp "$MATE_M/data/backlog.md" "$TMP_ROOT/mate-m-backlog-with-norepo.md"
+set +e
+OUT=$(run "$HOME_M" "$FAKEBIN_M" --stdout 2>&1)
+CODE=$?
+set -e
+[ "$CODE" -ne 0 ] || fail "mate work with no repo must refuse the feed, not drop the work"
+assert_contains "$OUT" "names no project" "the refusal should name the unattributable mate work"
+assert_contains "$OUT" "mate-m" "the refusal should name the mate"
+# Restore the mate backlog for any later reads.
+grep -v 'me-norepo' "$TMP_ROOT/mate-m-backlog-with-norepo.md" > "$MATE_M/data/backlog.md"
+pass "unattributable mate work is refused rather than silently dropped"
+
+# --- a held item is ONE item, wherever it is worked -------------------------
+# A mate summary reports a held in-flight item on both its in-flight and its
+# queued surface. Folding both surfaces counted one item twice and lost its
+# hold, so a card read on-track with no decision while the captain was the only
+# thing the work was waiting for. The two homes below carry the identical row.
+HELD_ROW='- [ ] held-ship - Choose the storage format (repo: heldwork) (kind: ship) (since 2026-07-06) (hold: the captain must pick a format before the schema is written) (hold-kind: captain)'
+
+HOME_G=$(new_home home-g)
+FAKEBIN_G=$(make_fakebin "$HOME_G")
+cat > "$HOME_G/data/projects.md" <<'EOF'
+# Projects
+
+- heldwork [no-mistakes] - Worked in this home (added 2026-07-01)
+EOF
+printf '## In flight\n%s\n\n## Queued\n\n## Done\n' "$HELD_ROW" > "$HOME_G/data/backlog.md"
+FEED_G=$(run "$HOME_G" "$FAKEBIN_G" --stdout) || fail "generating the home-g feed failed"
+HW_OWN=$(printf '%s' "$FEED_G" | jq '.projects[] | select(.id == "heldwork")')
+
+HOME_H=$(new_home home-h)
+FAKEBIN_H=$(make_fakebin "$HOME_H")
+MATE_H="$TMP_ROOT/mate-h-home"
+mkdir -p "$MATE_H/data" "$MATE_H/state" "$MATE_H/config" "$MATE_H/projects" "$MATE_H/bin"
+printf '# Firstmate fixture\n' > "$MATE_H/AGENTS.md"
+printf 'mate-h\n' > "$MATE_H/.fm-secondmate-home"
+cat > "$HOME_H/data/projects.md" <<'EOF'
+# Projects
+
+- heldwork [no-mistakes] - Routed to the mate-h second mate (added 2026-07-01)
+EOF
+printf '## In flight\n\n## Queued\n\n## Done\n' > "$HOME_H/data/backlog.md"
+printf -- '- mate-h - The heldwork mate (home: %s; scope: everything heldwork; projects: heldwork; added 2026-07-01)\n' \
+  "$MATE_H" > "$HOME_H/data/secondmates.md"
+fm_write_secondmate_meta "$HOME_H/state/mate-h.meta" "$MATE_H" "firstmate:fm-mate-h" heldwork
+printf '## In flight\n%s\n\n## Queued\n\n## Done\n' "$HELD_ROW" > "$MATE_H/data/backlog.md"
+FEED_H=$(run "$HOME_H" "$FAKEBIN_H" --stdout) || fail "generating the home-h feed failed"
+HW_MATE=$(printf '%s' "$FEED_H" | jq '.projects[] | select(.id == "heldwork")')
+
+for side in own mate; do
+  case $side in own) CARD=$HW_OWN ;; mate) CARD=$HW_MATE ;; esac
+  printf '%s' "$CARD" | jq -e '[.executiveSummary.metrics[] | select(.label == "In flight" or .label == "Queued") | .value]
+                               == ["1", "0"]' >/dev/null \
+    || fail "the $side card must count the held item once, in flight: $(printf '%s' "$CARD" | jq -c '.executiveSummary.metrics')"
+  printf '%s' "$CARD" | jq -e '.executiveSummary.lede | startswith("heldwork has 1 item recorded: 1 in flight, 0 queued")' >/dev/null \
+    || fail "the $side card must record one item, not two: $(printf '%s' "$CARD" | jq -c '.executiveSummary.lede')"
+  printf '%s' "$CARD" | jq -e '[.decisions[] | select(.owner == "captain")] | length == 1' >/dev/null \
+    || fail "the $side card must put the held item in front of the captain: $(printf '%s' "$CARD" | jq -c '.decisions')"
+done
+printf '%s' "$HW_MATE" | jq -e '[.currentStatus.signals[] | select(.label == "Second mate")][0].evidence
+                                == "Durable records of mate-h: held-ship."' >/dev/null \
+  || fail "the mate signal must name the item once: $(printf '%s' "$HW_MATE" | jq -c '.currentStatus.signals')"
+pass "a held item worked by a mate is counted once and reaches the captain, exactly as this home's own"
+
+# --- truncation discloses where work was lost, and only there ---------------
+# The read of a mate home is bounded per surface. Truncating a surface this feed
+# never folds costs it nothing, so disclosing it was a false alarm on a complete
+# card; truncating a work surface loses rows whose project is unknowable, so the
+# disclosure has to reach every card rather than the ones still visible.
+HOME_I=$(new_home home-i)
+FAKEBIN_I=$(make_fakebin "$HOME_I")
+MATE_I="$TMP_ROOT/mate-i-home"
+mkdir -p "$MATE_I/data" "$MATE_I/state" "$MATE_I/config" "$MATE_I/projects" "$MATE_I/bin"
+printf '# Firstmate fixture\n' > "$MATE_I/AGENTS.md"
+printf 'mate-i\n' > "$MATE_I/.fm-secondmate-home"
+cat > "$HOME_I/data/projects.md" <<'EOF'
+# Projects
+
+- seenwork [no-mistakes] - The project the bounded read still shows (added 2026-07-01)
+- lostwork [no-mistakes] - The project whose mate rows fall past the bound (added 2026-07-01)
+EOF
+printf '## In flight\n\n## Queued\n\n## Done\n' > "$HOME_I/data/backlog.md"
+# The registry records only seenwork, so the mate's own rows are the sole
+# evidence that it also carries lostwork - exactly the evidence truncation eats.
+printf -- '- mate-i - The bounded mate (home: %s; scope: seenwork things; projects: seenwork; added 2026-07-01)\n' \
+  "$MATE_I" > "$HOME_I/data/secondmates.md"
+fm_write_secondmate_meta "$HOME_I/state/mate-i.meta" "$MATE_I" "firstmate:fm-mate-i" seenwork
+cat > "$MATE_I/data/backlog.md" <<'EOF'
+## In flight
+
+## Queued
+- [ ] mi-seen - Wire the seen thing (repo: seenwork) (since 2026-07-08)
+- [ ] mi-lost - Wire the lost thing (repo: lostwork) (since 2026-07-08)
+
+## Done
+EOF
+
+FEED_I=$(FM_SNAPSHOT_SECONDMATE_QUEUED=1 run "$HOME_I" "$FAKEBIN_I" --stdout) \
+  || fail "generating the home-i feed failed"
+LOST=$(printf '%s' "$FEED_I" | jq '.projects[] | select(.id == "lostwork")')
+printf '%s' "$LOST" | jq -e '[.currentStatus.signals[] | select(.label == "Second mate")][0]
+                             | .state == "unknown" and (.value | contains("more work than this feed could read"))' >/dev/null \
+  || fail "a project whose mate rows fell past the bound must be disclosed: $(printf '%s' "$LOST" | jq -c '.currentStatus.signals')"
+printf '%s' "$LOST" | jq -e '.headline | contains("could not place")' >/dev/null \
+  || fail "an empty card may not claim nothing is recorded while rows went unread: $(printf '%s' "$LOST" | jq -c '.headline')"
+printf '%s' "$LOST" | jq -e '[.currentStatus.signals[] | select(.label == "Second mate")][0].evidence
+                             | contains("1 more queued") and (contains("_") | not)' >/dev/null \
+  || fail "the disclosure must say what was lost, in the words of the card: $(printf '%s' "$LOST" | jq -c '.currentStatus.signals')"
+
+# The same mate, bounded only on a surface this feed never folds: nothing is
+# lost, so nothing may be disclosed.
+FEED_I2=$(FM_SNAPSHOT_SECONDMATE_CHILDREN=1 run "$HOME_I" "$FAKEBIN_I" --stdout) \
+  || fail "generating the second home-i feed failed"
+printf '%s' "$FEED_I2" | jq -e '[.projects[].currentStatus.signals[]?
+                                 | select(.label == "Second mate" and .state == "unknown")] | length == 0' >/dev/null \
+  || fail "a bound on a surface the feed never folds is not lost work: $(printf '%s' "$FEED_I2" | jq -c '[.projects[].currentStatus.signals[]?|select(.label=="Second mate")]')"
+printf '%s' "$FEED_I2" | jq -e '[.projects[] | select(.id == "seenwork")][0].executiveSummary.metrics[]
+                                | select(.label == "Queued") | .value == "1"' >/dev/null \
+  || fail "the complete read must still carry the mate work: $(printf '%s' "$FEED_I2" | jq -c '[.projects[]|select(.id=="seenwork")][0].executiveSummary')"
+pass "a bounded read discloses the work it lost, and stays quiet about what it did not"
+
+# --- a mate running an older firstmate discloses, it does not stop the feed --
+# A remote home that has not self-updated reports no per-project attribution at
+# all. Refusing the whole document over one lagging mate would blind every other
+# card in it, so its work is disclosed as unplaceable instead.
+HOME_J=$(new_home home-j)
+FAKEBIN_J=$(make_fakebin "$HOME_J")
+# The remote transport rejects a configured root or home carrying an empty path
+# component, and TMPDIR routinely ends in a slash, so physicalize both here.
+OLD_MATE_HOME="$TMP_ROOT/old-mate-home"
+mkdir -p "$OLD_MATE_HOME"
+OLD_MATE_HOME=$(cd "$OLD_MATE_HOME" && pwd -P)
+# fm-on.sh runs a remote command only when it is an executable TRACKED in the
+# resolved code root, so the remote route needs its own committed fixture root.
+REMOTE_FIX="$TMP_ROOT/remote-fixture-root"
+fm_git_init_commit "$REMOTE_FIX"
+REMOTE_FIX=$(cd "$REMOTE_FIX" && pwd -P)
+mkdir -p "$REMOTE_FIX/bin"
+cp "$ROOT/bin/fm-fleet-snapshot.sh" "$REMOTE_FIX/bin/fm-fleet-snapshot.sh"
+chmod +x "$REMOTE_FIX/bin/fm-fleet-snapshot.sh"
+git -C "$REMOTE_FIX" add bin/fm-fleet-snapshot.sh
+git -C "$REMOTE_FIX" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+  commit -qm 'tracked remote fixture'
+cat > "$HOME_J/data/projects.md" <<'EOF'
+# Projects
+
+- oldwork [no-mistakes] - Routed to a mate running an older firstmate (added 2026-07-01)
+- freshwork [no-mistakes] - An unrelated project that must still get a card (added 2026-07-01)
+EOF
+printf '## In flight\n\n## Queued\n\n## Done\n' > "$HOME_J/data/backlog.md"
+printf -- '- mate-o - The lagging mate (host: remote-mac; root: %s; home: %s; scope: oldwork things; projects: oldwork; added 2026-07-01)\n' \
+  "$REMOTE_FIX" "$OLD_MATE_HOME" > "$HOME_J/data/secondmates.md"
+cat > "$TMP_ROOT/old-summary.json" <<EOF
+{"schema":"fm-secondmate-home-summary.v1","generated":"$NOW","home":"$OLD_MATE_HOME",
+ "valid":true,"reason":null,"invalidity":{"kind":null,"ids":[]},"state":"idle",
+ "active_children":[],"decisions_open":[],"holds":[],
+ "queued":[{"id":"mo-queued","title":"Queued on the older mate","blocked_by":null,
+   "blocked_by_ids":[],"unresolved_blocker_ids":[],"blocked_reason":null,
+   "hold_reason":null,"hold_kind":null,"captain_actionable":false,"kind":"ship"}],
+ "landed":[{"id":"mo-landed","title":"Landed on the older mate","pr_url":null,
+   "report_path":null,"local_note":null,"completion":{"date":"2026-07-05"}}],
+ "endpoints":[],
+ "counts":{"active_children":0,"decisions_open":0,"holds":0,"queued":1,"landed":1,"endpoints":0},
+ "omitted":[]}
+EOF
+cat > "$FAKEBIN_J/fake-ssh" <<SH
+#!/usr/bin/env bash
+cat "$TMP_ROOT/old-summary.json"
+SH
+chmod +x "$FAKEBIN_J/fake-ssh"
+
+FEED_J=$(PATH="$FAKEBIN_J:$PATH" FM_HOME="$HOME_J" FM_SNAPSHOT_NOW="$NOW" \
+  FM_ROOT_OVERRIDE="$REMOTE_FIX" FM_SSH_BIN="$FAKEBIN_J/fake-ssh" "$FEED" --stdout) \
+  || fail "a mate running an older firstmate must not refuse the whole feed"
+printf '%s' "$FEED_J" | jq -e '[.projects[].id] | index("freshwork") != null' >/dev/null \
+  || fail "every other project must still get a card: $(printf '%s' "$FEED_J" | jq -c '[.projects[].id]')"
+printf '%s' "$FEED_J" | jq -e '[.projects[] | select(.id == "oldwork")][0].currentStatus.signals[]
+                               | select(.label == "Second mate")
+                               | .state == "unknown" and (.value | contains("cannot be placed"))' >/dev/null \
+  || fail "the older mate must be disclosed, not folded or dropped: $(printf '%s' "$FEED_J" | jq -c '[.projects[]|select(.id=="oldwork")][0].currentStatus.signals')"
+printf '%s' "$FEED_J" | jq -e '[.projects[] | select(.id == "oldwork")][0].executiveSummary == null' >/dev/null \
+  || fail "unplaceable work may not be counted onto a card: $(printf '%s' "$FEED_J" | jq -c '[.projects[]|select(.id=="oldwork")][0].executiveSummary')"
+pass "a second mate running an older firstmate is disclosed rather than refusing the feed"
+
+# --- a registered mate with no local record still discloses -----------------
+# The project list used to be read only from this home's task metadata, so a
+# mate that had never been launched here - the very mate whose work is least
+# visible - was disclosed on no project at all. The registry carries it too.
+HOME_K=$(new_home home-k)
+FAKEBIN_K=$(make_fakebin "$HOME_K")
+cat > "$HOME_K/data/projects.md" <<'EOF'
+# Projects
+
+- unlaunched [no-mistakes] - Served by a mate this home has never launched (added 2026-07-01)
+EOF
+printf '## In flight\n\n## Queued\n\n## Done\n' > "$HOME_K/data/backlog.md"
+printf -- '- mate-k - The unlaunched mate (home: %s; scope: unlaunched things; projects: unlaunched; added 2026-07-01)\n' \
+  "$TMP_ROOT/no-such-mate-home" > "$HOME_K/data/secondmates.md"
+FEED_K=$(run "$HOME_K" "$FAKEBIN_K" --stdout) || fail "generating the home-k feed failed"
+printf '%s' "$FEED_K" | jq -e '[.projects[] | select(.id == "unlaunched")][0].currentStatus.signals[]
+                               | select(.label == "Second mate")
+                               | .state == "unknown" and (.value | contains("mate-k"))' >/dev/null \
+  || fail "a registered mate with no local record must still be disclosed: $(printf '%s' "$FEED_K" | jq -c '[.projects[]|select(.id=="unlaunched")][0].currentStatus.signals')"
+pass "a registered second mate is disclosed from the registry alone"
+
+# --- internal record paths never reach a captain-facing field ---------------
+# Hold reasons and status lines are written for firstmate's own records; the
+# projection must drop the pointer and keep the decision, and truncation must
+# land on a sentence boundary, never mid-word or mid-path.
+HOME_Z=$(new_home home-z)
+FAKEBIN_Z=$(make_fakebin "$HOME_Z")
+cat > "$HOME_Z/data/projects.md" <<'EOF'
+# Projects
+
+- pointy [no-mistakes] - Fixture project with pointer-carrying records (added 2026-07-01)
+EOF
+cat > "$HOME_Z/data/backlog.md" <<'EOF'
+## In flight
+- [ ] pointy-hold - Choose the export format (repo: pointy) (kind: ship) (since 2026-07-06) (hold: The captain must pick the export format. Full record in data/decisions/2026-07-06-export-format.md) (hold-kind: captain)
+- [ ] pointy-codec - Choose the codec (repo: pointy) (kind: ship) (since 2026-07-08) (hold: Full record in data/decisions/2026-07-08-codec.md. The captain must choose the codec v1.2 before release.) (hold-kind: captain)
+- [ ] pointy-quoted - Choose the tariff (repo: pointy) (kind: ship) (since 2026-07-09) (hold: The captain must approve the tariff. Context in `data/decisions/2026-07-09-tariff.md`.) (hold-kind: captain)
+- [ ] pointy-titled - Rework state/pointy-ship handling (repo: pointy) (kind: ship) (since 2026-07-10) (hold: The captain must confirm the rework.) (hold-kind: captain)
+- [ ] pointy-ship - Ship the pointy thing (repo: pointy) (kind: ship) (since 2026-07-07)
+EOF
+make_clone "$HOME_Z" pointy 'git@github.com:acme/pointy.git'
+fm_write_meta "$HOME_Z/state/pointy-ship.meta" \
+  "window=firstmate:fm-pointy-ship" \
+  "worktree=$HOME_Z/projects/pointy" \
+  "project=$HOME_Z/projects/pointy" \
+  "harness=claude" "kind=ship" "mode=no-mistakes"
+record_claude_state "$HOME_Z/state" pointy-ship idle
+printf 'blocked [key=creds]: The deploy credential is rejected. Full trace kept in state/pointy-ship.status\n' \
+  > "$HOME_Z/state/pointy-ship.status"
+
+FEED_Z=$(run "$HOME_Z" "$FAKEBIN_Z" --stdout) || fail "generating the home-z feed failed"
+PT=$(printf '%s' "$FEED_Z" | jq '.projects[] | select(.id == "pointy")')
+printf '%s' "$PT" | jq -e 'tostring | test("(^|[^a-z])(data|state)/") | not' >/dev/null \
+  || fail "no internal record path may reach a rendered card: $(printf '%s' "$PT" | jq -c '{headline, decisions, blockers}')"
+printf '%s' "$PT" | jq -e '.headline | startswith("Work has stopped: The deploy credential is rejected.")' >/dev/null \
+  || fail "the headline should keep the finding and drop the pointer: $(printf '%s' "$PT" | jq -c '.headline')"
+printf '%s' "$PT" | jq -e '.decisions[0].why == "The captain must pick the export format."' >/dev/null \
+  || fail "a hold reason should keep the decision and drop the pointer: $(printf '%s' "$PT" | jq -c '.decisions[0]')"
+printf '%s' "$PT" | jq -e '[.blockers[] | .detail // ""] | all(contains("…") | not)' >/dev/null \
+  || fail "pointer-stripped text should end on a sentence boundary, not an ellipsis: $(printf '%s' "$PT" | jq -c '.blockers')"
+# A pointer sentence must not take the sentence after it down with it, and a
+# dot inside a token must not split that token.
+printf '%s' "$PT" | jq -e '[.decisions[] | select(.question == "Choose the codec?")]
+                            | first.why == "The captain must choose the codec v1.2 before release."' >/dev/null \
+  || fail "a leading pointer sentence should be dropped on its own: $(printf '%s' "$PT" | jq -c '.decisions')"
+# A backtick quotes a path exactly like any other quote.
+printf '%s' "$PT" | jq -e '[.decisions[] | select(.question == "Choose the tariff?")]
+                            | first.why == "The captain must approve the tariff."' >/dev/null \
+  || fail "a backtick-quoted pointer should be dropped: $(printf '%s' "$PT" | jq -c '.decisions')"
+# A backlog title is internal free text too, so every title the captain reads
+# goes through the same filter and falls back to the item id.
+printf '%s' "$PT" | jq -e '[.blockers[] | select(.since == "2026-07-10")]
+                            | first.title == "pointy-titled"' >/dev/null \
+  || fail "a path-carrying title should fall back to the item id: $(printf '%s' "$PT" | jq -c '.blockers')"
+pass "internal record paths are dropped before any captain-facing field"
 
 # --- firstmate never writes into a project ----------------------------------
 GOOD="$TMP_ROOT/good-feed.json"
