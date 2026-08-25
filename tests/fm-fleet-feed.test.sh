@@ -650,14 +650,14 @@ pass "the four sections come out in the renderer's order"
 # Hold reasons and status lines are written for firstmate's own records; the
 # projection must drop the pointer and keep the decision, and truncation must
 # land on a sentence boundary, never mid-word or mid-path.
-HOME_G=$(new_home home-g)
-FAKEBIN_G=$(make_fakebin "$HOME_G")
-cat > "$HOME_G/data/projects.md" <<'EOF'
+HOME_Z=$(new_home home-z)
+FAKEBIN_Z=$(make_fakebin "$HOME_Z")
+cat > "$HOME_Z/data/projects.md" <<'EOF'
 # Projects
 
 - pointy [no-mistakes] - Fixture project with pointer-carrying records (added 2026-07-01)
 EOF
-cat > "$HOME_G/data/backlog.md" <<'EOF'
+cat > "$HOME_Z/data/backlog.md" <<'EOF'
 ## In flight
 - [ ] pointy-hold - Choose the export format (repo: pointy) (kind: ship) (since 2026-07-06) (hold: The captain must pick the export format. Full record in data/decisions/2026-07-06-export-format.md) (hold-kind: captain)
 - [ ] pointy-codec - Choose the codec (repo: pointy) (kind: ship) (since 2026-07-08) (hold: Full record in data/decisions/2026-07-08-codec.md. The captain must choose the codec v1.2 before release.) (hold-kind: captain)
@@ -665,18 +665,18 @@ cat > "$HOME_G/data/backlog.md" <<'EOF'
 - [ ] pointy-titled - Rework state/pointy-ship handling (repo: pointy) (kind: ship) (since 2026-07-10) (hold: The captain must confirm the rework.) (hold-kind: captain)
 - [ ] pointy-ship - Ship the pointy thing (repo: pointy) (kind: ship) (since 2026-07-07)
 EOF
-make_clone "$HOME_G" pointy 'git@github.com:acme/pointy.git'
-fm_write_meta "$HOME_G/state/pointy-ship.meta" \
+make_clone "$HOME_Z" pointy 'git@github.com:acme/pointy.git'
+fm_write_meta "$HOME_Z/state/pointy-ship.meta" \
   "window=firstmate:fm-pointy-ship" \
-  "worktree=$HOME_G/projects/pointy" \
-  "project=$HOME_G/projects/pointy" \
+  "worktree=$HOME_Z/projects/pointy" \
+  "project=$HOME_Z/projects/pointy" \
   "harness=claude" "kind=ship" "mode=no-mistakes"
-record_claude_state "$HOME_G/state" pointy-ship idle
+record_claude_state "$HOME_Z/state" pointy-ship idle
 printf 'blocked [key=creds]: The deploy credential is rejected. Full trace kept in state/pointy-ship.status\n' \
-  > "$HOME_G/state/pointy-ship.status"
+  > "$HOME_Z/state/pointy-ship.status"
 
-FEED_G=$(run "$HOME_G" "$FAKEBIN_G" --stdout) || fail "generating the home-g feed failed"
-PT=$(printf '%s' "$FEED_G" | jq '.projects[] | select(.id == "pointy")')
+FEED_Z=$(run "$HOME_Z" "$FAKEBIN_Z" --stdout) || fail "generating the home-z feed failed"
+PT=$(printf '%s' "$FEED_Z" | jq '.projects[] | select(.id == "pointy")')
 printf '%s' "$PT" | jq -e 'tostring | test("(^|[^a-z])(data|state)/") | not' >/dev/null \
   || fail "no internal record path may reach a rendered card: $(printf '%s' "$PT" | jq -c '{headline, decisions, blockers}')"
 printf '%s' "$PT" | jq -e '.headline | startswith("Work has stopped: The deploy credential is rejected.")' >/dev/null \
