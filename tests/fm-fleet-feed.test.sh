@@ -765,6 +765,7 @@ cat > "$MATE_N/data/backlog.md" <<'EOF'
 - [ ] mn-ship - Ship the nap thing (repo: napwork) (kind: ship) (since 2026-07-09)
 
 ## Queued
+- [ ] mn-hold - Choose the nap format (repo: napwork) (kind: captain) (since 2026-07-09) (hold: The captain must pick the nap format. Full record in data/decisions/2026-07-09-nap.md) (hold-kind: captain)
 
 ## Done
 EOF
@@ -783,6 +784,15 @@ printf '%s' "$N" | jq -e '[.executiveSummary.metrics[] | select(.label == "In fl
 printf '%s' "$N" | jq -e '.headline | contains("declared dormant") and contains("in flight") and contains("disagree")' >/dev/null \
   || fail "mate work in flight must contradict a dormant declaration: $(printf '%s' "$N" | jq -c '.headline')"
 pass "folded second-mate work contradicts a dormant declaration like a local row"
+
+# A mate hold reason is internal record text exactly like this home's own, so it
+# passes the same filter on its way into a captain-facing field.
+printf '%s' "$N" | jq -e 'tostring | test("(^|[^a-z])(data|state)/") | not' >/dev/null \
+  || fail "no internal record path may reach a card through folded mate work: $(printf '%s' "$N" | jq -c '{headline, decisions, blockers, captainTasks}')"
+printf '%s' "$N" | jq -e '[.decisions[] | select(.question == "Choose the nap format?")]
+                          | first.why == "The captain must pick the nap format."' >/dev/null \
+  || fail "a mate hold reason should keep the decision and drop the pointer: $(printf '%s' "$N" | jq -c '.decisions')"
+pass "folded mate text passes the same captain-facing filter as this home's own"
 
 # --- an unreadable mate is disclosed, never silently quiet ------------------
 # The registry names a mate whose home does not exist; its project is named only
@@ -1024,6 +1034,61 @@ printf '%s' "$FEED_K" | jq -e '[.projects[] | select(.id == "unlaunched")][0].cu
                                | .state == "unknown" and (.value | contains("mate-k"))' >/dev/null \
   || fail "a registered mate with no local record must still be disclosed: $(printf '%s' "$FEED_K" | jq -c '[.projects[]|select(.id=="unlaunched")][0].currentStatus.signals')"
 pass "a registered second mate is disclosed from the registry alone"
+
+# --- internal record paths never reach a captain-facing field ---------------
+# Hold reasons and status lines are written for firstmate's own records; the
+# projection must drop the pointer and keep the decision, and truncation must
+# land on a sentence boundary, never mid-word or mid-path.
+HOME_Z=$(new_home home-z)
+FAKEBIN_Z=$(make_fakebin "$HOME_Z")
+cat > "$HOME_Z/data/projects.md" <<'EOF'
+# Projects
+
+- pointy [no-mistakes] - Fixture project with pointer-carrying records (added 2026-07-01)
+EOF
+cat > "$HOME_Z/data/backlog.md" <<'EOF'
+## In flight
+- [ ] pointy-hold - Choose the export format (repo: pointy) (kind: ship) (since 2026-07-06) (hold: The captain must pick the export format. Full record in data/decisions/2026-07-06-export-format.md) (hold-kind: captain)
+- [ ] pointy-codec - Choose the codec (repo: pointy) (kind: ship) (since 2026-07-08) (hold: Full record in data/decisions/2026-07-08-codec.md. The captain must choose the codec v1.2 before release.) (hold-kind: captain)
+- [ ] pointy-quoted - Choose the tariff (repo: pointy) (kind: ship) (since 2026-07-09) (hold: The captain must approve the tariff. Context in `data/decisions/2026-07-09-tariff.md`.) (hold-kind: captain)
+- [ ] pointy-titled - Rework state/pointy-ship handling (repo: pointy) (kind: ship) (since 2026-07-10) (hold: The captain must confirm the rework.) (hold-kind: captain)
+- [ ] pointy-ship - Ship the pointy thing (repo: pointy) (kind: ship) (since 2026-07-07)
+EOF
+make_clone "$HOME_Z" pointy 'git@github.com:acme/pointy.git'
+fm_write_meta "$HOME_Z/state/pointy-ship.meta" \
+  "window=firstmate:fm-pointy-ship" \
+  "worktree=$HOME_Z/projects/pointy" \
+  "project=$HOME_Z/projects/pointy" \
+  "harness=claude" "kind=ship" "mode=no-mistakes"
+record_claude_state "$HOME_Z/state" pointy-ship idle
+printf 'blocked [key=creds]: The deploy credential is rejected. Full trace kept in state/pointy-ship.status\n' \
+  > "$HOME_Z/state/pointy-ship.status"
+
+FEED_Z=$(run "$HOME_Z" "$FAKEBIN_Z" --stdout) || fail "generating the home-z feed failed"
+PT=$(printf '%s' "$FEED_Z" | jq '.projects[] | select(.id == "pointy")')
+printf '%s' "$PT" | jq -e 'tostring | test("(^|[^a-z])(data|state)/") | not' >/dev/null \
+  || fail "no internal record path may reach a rendered card: $(printf '%s' "$PT" | jq -c '{headline, decisions, blockers}')"
+printf '%s' "$PT" | jq -e '.headline | startswith("Work has stopped: The deploy credential is rejected.")' >/dev/null \
+  || fail "the headline should keep the finding and drop the pointer: $(printf '%s' "$PT" | jq -c '.headline')"
+printf '%s' "$PT" | jq -e '.decisions[0].why == "The captain must pick the export format."' >/dev/null \
+  || fail "a hold reason should keep the decision and drop the pointer: $(printf '%s' "$PT" | jq -c '.decisions[0]')"
+printf '%s' "$PT" | jq -e '[.blockers[] | .detail // ""] | all(contains("…") | not)' >/dev/null \
+  || fail "pointer-stripped text should end on a sentence boundary, not an ellipsis: $(printf '%s' "$PT" | jq -c '.blockers')"
+# A pointer sentence must not take the sentence after it down with it, and a
+# dot inside a token must not split that token.
+printf '%s' "$PT" | jq -e '[.decisions[] | select(.question == "Choose the codec?")]
+                            | first.why == "The captain must choose the codec v1.2 before release."' >/dev/null \
+  || fail "a leading pointer sentence should be dropped on its own: $(printf '%s' "$PT" | jq -c '.decisions')"
+# A backtick quotes a path exactly like any other quote.
+printf '%s' "$PT" | jq -e '[.decisions[] | select(.question == "Choose the tariff?")]
+                            | first.why == "The captain must approve the tariff."' >/dev/null \
+  || fail "a backtick-quoted pointer should be dropped: $(printf '%s' "$PT" | jq -c '.decisions')"
+# A backlog title is internal free text too, so every title the captain reads
+# goes through the same filter and falls back to the item id.
+printf '%s' "$PT" | jq -e '[.blockers[] | select(.since == "2026-07-10")]
+                            | first.title == "pointy-titled"' >/dev/null \
+  || fail "a path-carrying title should fall back to the item id: $(printf '%s' "$PT" | jq -c '.blockers')"
+pass "internal record paths are dropped before any captain-facing field"
 
 # --- firstmate never writes into a project ----------------------------------
 GOOD="$TMP_ROOT/good-feed.json"
