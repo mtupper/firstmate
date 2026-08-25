@@ -511,7 +511,9 @@ if (stableRows.length !== 4) throw new Error(`single-flight recovery launched ${
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi must deliver the actionable wake after bounded hung-successor recovery"
+  # The fixture's own diagnostics are on stderr, so they have to travel with the
+  # exit-code assertion: without them a failure here reports only "got 1".
+  expect_code 0 "$status" "Pi must deliver the actionable wake after bounded hung-successor recovery${out:+: $out}"
   [ -z "$out" ] || fail "Pi hung-successor test printed output: $out"
   pass "Pi hung successor falls back to one typed actionable wake"
 }
