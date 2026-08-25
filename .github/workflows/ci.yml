@@ -353,29 +353,30 @@ jobs:
           done < "$shell_inventory"
           [ "$parse_fail" -eq 0 ] || { echo "::error::stock macOS Bash 3.2 parse sweep failed"; exit 1; }
 
-          snapshot_output=$(/bin/bash tests/fm-fleet-snapshot-view.test.sh)
-          printf '%s\n' "$snapshot_output"
-          snapshot_count=$(printf '%s\n' "$snapshot_output" | grep -c '^ok - ')
-          [ "$snapshot_count" -eq 15 ] || {
-            echo "::error::expected 15 snapshot/fleet-view tests, got $snapshot_count"
-            exit 1
+          # Each suite must keep at least the number of passing assertions
+          # recorded below, so a silently dropped test still fails this job.
+          # Adding tests never fails it; raise a floor when a suite's coverage
+          # grows enough to be worth locking in.
+          run_suite() {
+            suite_file=$1
+            suite_floor=$2
+            suite_status=0
+            suite_output=$(/bin/bash "$suite_file") || suite_status=$?
+            printf '%s\n' "$suite_output"
+            [ "$suite_status" -eq 0 ] || {
+              echo "::error::$suite_file exited with status $suite_status"
+              return 1
+            }
+            suite_count=$(printf '%s\n' "$suite_output" | grep -c '^ok - ' || true)
+            [ "$suite_count" -ge "$suite_floor" ] || {
+              echo "::error::$suite_file must keep at least $suite_floor passing tests, got $suite_count"
+              return 1
+            }
           }
 
-          bearings_output=$(/bin/bash tests/fm-bearings-snapshot.test.sh)
-          printf '%s\n' "$bearings_output"
-          bearings_count=$(printf '%s\n' "$bearings_output" | grep -c '^ok - ')
-          [ "$bearings_count" -eq 41 ] || {
-            echo "::error::expected 41 Bearings tests, got $bearings_count"
-            exit 1
-          }
-
-          feed_output=$(/bin/bash tests/fm-fleet-feed.test.sh)
-          printf '%s\n' "$feed_output"
-          feed_count=$(printf '%s\n' "$feed_output" | grep -c '^ok - ')
-          [ "$feed_count" -eq 47 ] || {
-            echo "::error::expected 47 fleet-feed tests, got $feed_count"
-            exit 1
-          }
+          run_suite tests/fm-fleet-snapshot-view.test.sh 15
+          run_suite tests/fm-bearings-snapshot.test.sh 41
+          run_suite tests/fm-fleet-feed.test.sh 47
 
   invariants:
     name: Repo invariants
