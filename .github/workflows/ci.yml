@@ -376,7 +376,7 @@ jobs:
 
           run_suite tests/fm-fleet-snapshot-view.test.sh 15
           run_suite tests/fm-bearings-snapshot.test.sh 41
-          run_suite tests/fm-fleet-feed.test.sh 36
+          run_suite tests/fm-fleet-feed.test.sh 37
 
   invariants:
     name: Repo invariants
