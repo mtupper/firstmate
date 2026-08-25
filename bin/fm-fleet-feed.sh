@@ -16,6 +16,23 @@
 # them, so this script obeys the schema and never extends it. Check output with
 # the dashboard's own checker: `pnpm data:check <path>`.
 #
+# LIFECYCLE DECLARATIONS. This script is the single owner of the registry's
+# optional second-bracket lifecycle declaration (the line format itself is
+# documented by bin/fm-project-mode.sh):
+#   [stable]              declared steady-state; wins over the derived reading
+#   [dormant]             declared not-being-worked; wins over the derived
+#                         reading, and a declared-dormant project with in-flight
+#                         work gets a headline that reports the contradiction
+#                         plainly rather than quietly believing either side
+#   [archived: <reason>]  declared closed for good; wins outright, the reason
+#                         becomes statusReason, and the decisions, blockers and
+#                         task lists are dropped because they mean nothing once
+#                         a project is closed
+# Declaring `active` is refused: activity already proves it, so a declaration
+# could only ever lie. Any other bracket content is unparseable and refuses the
+# whole feed, matching how a malformed registry line is already treated. No
+# bracket means derive active/dormant from the recency window, as before.
+#
 # SECOND MATES. Work routed to a registered secondmate lives in that mate's own
 # home, so this home's backlog and task records cannot see it. The snapshot's
 # secondmate_current records carry each readable mate's durable work with
@@ -68,6 +85,7 @@
 #   - jq missing, or the canonical snapshot failing or not matching its schema id
 #   - no project registry (nothing could be grounded)
 #   - a project name that is not a valid feed id, or a duplicate registry entry
+#   - a declared `active` lifecycle, or an unparseable lifecycle bracket
 #   - a structured backlog row with no repo, or an unattributable free-form row
 #     in the current sections (real work the feed would silently drop)
 #   - a second mate that reports per-project attribution and still names no
@@ -86,7 +104,7 @@
 #                                 (default 10); must be a positive integer
 set -u
 
-CONTRACT_VERSION=1.0.0
+CONTRACT_VERSION=2.0.0
 SNAPSHOT_SCHEMA=fm-fleet-snapshot.v1
 ACTIVE_DAYS_DEFAULT=14
 CLONE_READ_TIMEOUT=${FM_FLEET_FEED_CLONE_TIMEOUT:-10}
@@ -182,10 +200,13 @@ CUTOFF=$(date -u -r "$cut_epoch" +%Y-%m-%d 2>/dev/null \
   || die "cannot compute the recency cutoff on this platform"
 
 # --- registry ---------------------------------------------------------------
-# One record per registered project: its name and its description. The registry
-# LINE FORMAT and the delivery-posture mapping are owned by
-# bin/fm-project-mode.sh; this only splits name from description and delegates
-# the posture, so the two cannot drift.
+# One record per registered project: its name, its optional lifecycle
+# declaration and its description. The registry LINE FORMAT and the
+# delivery-posture mapping are owned by bin/fm-project-mode.sh; this only
+# splits the line and delegates the posture, so the two cannot drift. The
+# lifecycle declaration's semantics are owned by this script's header. An
+# unclosed second bracket is emitted as its raw content so the validation
+# below refuses it as unparseable rather than reading it as description.
 REGISTRY_TSV=$(awk '
   /^- / {
     line = $0
@@ -198,23 +219,61 @@ REGISTRY_TSV=$(awk '
       i = index(rest, "]")
       if (i > 0) rest = substr(rest, i + 1)
     }
+    sub(/^[ \t]+/, "", rest)
+    decl = ""
+    if (substr(rest, 1, 1) == "[") {
+      i = index(rest, "]")
+      if (i > 0) {
+        decl = substr(rest, 2, i - 2)
+        rest = substr(rest, i + 1)
+      } else {
+        decl = substr(rest, 2)
+        rest = ""
+      }
+      if (decl == "") decl = "(empty)"
+    }
     sub(/^[ \t]*-[ \t]*/, "", rest)
-    if (name != "") printf "%s\t%s\n", name, rest
+    # \037 (unit separator), not a tab: tab is IFS whitespace to the reader
+    # below, so an empty declaration field would collapse and shift the
+    # description into its place.
+    if (name != "") printf "%s\037%s\037%s\n", name, decl, rest
   }
 ' "$REGISTRY")
 [ -n "$REGISTRY_TSV" ] || die "project registry at $REGISTRY lists no projects"
 
 REGISTRY_JSON='[]'
-while IFS=$'\t' read -r rname rdesc; do
+while IFS=$'\037' read -r rname rdecl rdesc; do
   [ -n "$rname" ] || continue
+  declared=
+  reason=
+  case "$rdecl" in
+    '') ;;
+    stable|dormant|archived) declared=$rdecl ;;
+    archived:*)
+      declared=archived
+      reason=${rdecl#archived:}
+      # strip surrounding whitespace; an empty reason is simply absent
+      reason=${reason#"${reason%%[![:space:]]*}"}
+      reason=${reason%"${reason##*[![:space:]]}"}
+      ;;
+    active|active:*)
+      die "registry line for \"$rname\" declares [active]; active is derived from activity and may not be declared ($REGISTRY)" 2 ;;
+    *)
+      die "registry line for \"$rname\" carries an unparseable lifecycle declaration \"[$rdecl]\"; expected [stable], [dormant] or [archived: <reason>] ($REGISTRY)" 2 ;;
+  esac
   posture=$("$SCRIPT_DIR/fm-project-mode.sh" --raw "$rname" 2>/dev/null) || posture=
   REGISTRY_JSON=$(jq -n \
     --argjson acc "$REGISTRY_JSON" \
     --arg name "$rname" \
     --arg desc "$rdesc" \
+    --arg declared "$declared" \
+    --arg reason "$reason" \
     --arg mode "${posture%% *}" \
     --arg yolo "${posture##* }" \
-    '$acc + [{name:$name, desc:$desc, mode:(if $mode=="" then null else $mode end),
+    '$acc + [{name:$name, desc:$desc,
+              declared:(if $declared=="" then null else $declared end),
+              reason:(if $reason=="" then null else $reason end),
+              mode:(if $mode=="" then null else $mode end),
               yolo:(if $yolo=="" then null else $yolo end)}]')
 done <<EOF
 $REGISTRY_TSV
@@ -400,6 +459,13 @@ def worker_gone:
 # not a departure: the run declared its own completion, so the remedy is to
 # mark the item done, never to restart or requeue finished work.
 def run_finished: (.current_state.state == "done");
+# Order within one lifecycle section: strongest live evidence first, then most
+# recent activity, then name. `order` is per-section, so every section starts
+# at 0.
+def order_section:
+  group_by(.rank)
+  | map(sort_by(.name) | group_by(.last_date // "") | reverse | add // []) | add // []
+  | to_entries | map(.value + {order: .key});
 # A mate summary bounds several surfaces, only four of which carry work this feed
 # folds. Truncating the other surfaces costs the feed nothing, so a disclosure
 # that fired on them would be a false alarm on an otherwise complete card.
@@ -586,6 +652,27 @@ def surface_words:
       elif ($last_date != null and $last_date >= $cutoff) then true
       else false end) as $is_active
 
+   # A declaration always wins over the derived reading (the script header owns
+   # the declaration rules). A declared-dormant project with in-flight work is a
+   # contradiction the feed must report plainly rather than quietly believing
+   # either side; the contradiction takes the headline below. Folded second-mate
+   # work counts here exactly like work recorded in this home: the card speaks
+   # for the project, not for whichever home happens to hold the item.
+   | ($r.declared // null) as $declared
+   | (if $declared != null then $declared
+      elif $is_active then "active"
+      else "dormant" end) as $status
+   | (($inflight | length) + ($m_inflight | length)) as $contradicting_inflight
+   | (($working | length) + ($m_working | length)) as $contradicting_working
+   | (if $declared == "dormant"
+        and ($contradicting_inflight > 0 or $contradicting_working > 0)
+      then ("This project is declared dormant, but "
+            + (if $contradicting_inflight > 0
+               then ($contradicting_inflight | n("item is"; "items are")) + " in flight"
+               else ($contradicting_working | n("worker is"; "workers are")) + " running" end)
+            + "; the declaration and the recorded work disagree.")
+      else null end) as $dormant_contradiction
+
    | (if ($live_blocked | length) > 0 or ($stopped | length) > 0
         or ($m_blocked | length) > 0 then "blocked"
       elif ($open | length) > 0 and ($open | all(held))
@@ -610,7 +697,8 @@ def surface_words:
 
    # --- headline: the single most pressing grounded fact --------------------
    | (($captain_holds | length) + ($m_decisions | length)) as $captain_wait_n
-   | (if ($recs | length) == 0 and $m_items == 0 then
+   | (if $dormant_contradiction != null then $dormant_contradiction
+      elif ($recs | length) == 0 and $m_items == 0 then
         # An empty card may not claim nothing is recorded while a second mate
         # holds work this home read but could not place on any project.
         (if $m_unplaced then
@@ -851,12 +939,16 @@ def surface_words:
    | {
        id: $name,
        name: $name,
-       status: (if $is_active then "active" else "dormant" end),
+       status: $status,
+       statusReason: (($r.reason // null) | trunc(200)),
        health: $health,
        headline: $headline,
        rank: $rank,
        last_date: $last_date,
        updatedAt: $last_date,
+       # Absent is not zero: the count is emitted only when the backlog was
+       # actually readable, so a row omits the metric instead of drawing "0".
+       items: (if $backlog_present then ($recs | length) else null end),
        repo: ($c.repo | trunc(200)),
 
        executiveSummary: (if ($recs | length) == 0 and $m_items == 0 then null else {
@@ -895,23 +987,21 @@ def surface_words:
          signals: $signals
        } end),
 
-       decisions: (if $backlog_present then $decisions else null end),
-       blockers: (if $backlog_present then $blockers else null end),
-       captainTasks: (if $backlog_present then $captain_tasks else null end),
-       agentTasks: (if $backlog_present then $agent_tasks else null end)
+       # An archived project keeps its identity fields and its reason, and
+       # drops the heavy sections: decisions, blockers and the task lists mean
+       # nothing once a project is closed for good.
+       decisions: (if $status == "archived" or ($backlog_present | not) then null else $decisions end),
+       blockers: (if $status == "archived" or ($backlog_present | not) then null else $blockers end),
+       captainTasks: (if $status == "archived" or ($backlog_present | not) then null else $captain_tasks end),
+       agentTasks: (if $status == "archived" or ($backlog_present | not) then null else $agent_tasks end)
      }
  ]) as $all
 
-# Order within each section: strongest live evidence first, then most recent
-# activity, then name. `order` is per-section, so both start at 0.
-| ([$all[] | select(.status == "active")]
-   | group_by(.rank)
-   | map(sort_by(.name) | group_by(.last_date // "") | reverse | add // []) | add // []
-   | to_entries | map(.value + {order: .key})) as $active
-| ([$all[] | select(.status == "dormant")]
-   | group_by(.rank)
-   | map(sort_by(.name) | group_by(.last_date // "") | reverse | add // []) | add // []
-   | to_entries | map(.value + {order: .key})) as $dormant
+# The four lifecycle sections, in the order the renderer draws them.
+| ([$all[] | select(.status == "active")] | order_section) as $active
+| ([$all[] | select(.status == "stable")] | order_section) as $stable
+| ([$all[] | select(.status == "dormant")] | order_section) as $dormant
+| ([$all[] | select(.status == "archived")] | order_section) as $archived
 
 | {problems: [],
    feed: ({
@@ -920,7 +1010,7 @@ def surface_words:
      source: ("firstmate home \($home | split("/") | .[-2:] | join("/")): project registry, backlog, task records and status logs"
               | trunc(200)),
      generator: "bin/fm-fleet-feed.sh over fm-fleet-snapshot.v1",
-     projects: (($active + $dormant) | map(del(.rank, .last_date)))
+     projects: (($active + $stable + $dormant + $archived) | map(del(.rank, .last_date)))
    } | clean)}
 end
 ') || die "projection failed"
@@ -950,6 +1040,8 @@ printf '%s\n' "$FEED" > "$TMP" || die "cannot write $TMP"
 mv "$TMP" "$OUT" || die "cannot move the new feed into place at $OUT"
 trap - EXIT
 
-ACTIVE=$(printf '%s' "$FEED" | jq '[.projects[] | select(.status == "active")] | length')
-printf '%s: %s projects - %s active, %s dormant (active window: %s days, since %s)\n' \
-  "$OUT" "$COUNT" "$ACTIVE" "$((COUNT - ACTIVE))" "$ACTIVE_DAYS" "$CUTOFF"
+COUNTS=$(printf '%s' "$FEED" | jq -r '
+  [.projects[].status]
+  | "\(map(select(. == "active")) | length) active, \(map(select(. == "stable")) | length) stable, \(map(select(. == "dormant")) | length) dormant, \(map(select(. == "archived")) | length) archived"')
+printf '%s: %s projects - %s (active window: %s days, since %s)\n' \
+  "$OUT" "$COUNT" "$COUNTS" "$ACTIVE_DAYS" "$CUTOFF"
