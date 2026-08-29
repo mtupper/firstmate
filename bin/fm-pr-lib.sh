@@ -163,8 +163,8 @@ fm_pr_gitlab_path_valid() {
 #
 # FM_PR_OWNER and FM_PR_REPO are additionally set for github because
 # bin/fm-pr-merge.sh addresses GitHub by owner/repository. A gitlab URL leaves
-# them empty; teaching the merge path about GitLab is a separate change, and
-# until then it refuses a GitLab URL rather than merging anything.
+# them empty and is addressed by host and path instead, since a GitLab project
+# can sit at any namespace depth on any instance.
 fm_pr_url_parse() {
   local raw=${1-} pattern host path
   local LC_ALL=C
