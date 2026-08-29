@@ -97,6 +97,14 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GLAB_LOG"
 [ "${FM_TEST_GLAB_FAIL:-0}" = 0 ] || exit 1
 [ "${FM_TEST_GLAB_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GLAB_SLEEP"
+# The merge path asks for one JSON-derived facts line; the poll asks for the
+# default text view. Answer whichever this invocation requested.
+case " $* " in
+  *" --jq "*) printf '%s\n' "${FM_TEST_GLAB_MR_FACTS:-- opened - -}" ; exit 0 ;;
+esac
+case "${1:-} ${2:-}" in
+  "mr merge") exit 0 ;;
+esac
 printf 'title:\tfixture merge request\nstate:\t%s\nauthor:\tsomeone\n' "${FM_TEST_GLAB_STATE:-opened}"
 SH
   chmod +x "$fakebin/gh" "$fakebin/gh-axi" "$fakebin/glab"
@@ -2818,6 +2826,7 @@ SH
 # docs/gitlab-merge-watch.md; this exercises the same paths hermetically.
 test_gitlab_merge_watch() {
   local dir state out rc url value noglab entry bindir name
+  local MR_HEAD=abc1230000000000000000000000000000000def
   dir=$(make_case gitlab-merge-watch)
   state="$dir/home/state"
   url=https://gitlab.example/group/subgroup/project/-/merge_requests/7
@@ -2903,14 +2912,20 @@ EOF
   esac
   [ ! -e "$state/task-b.check.sh" ] || fail "refused GitLab arming left a poll armed"
 
-  # The merge path still addresses GitHub only, so it refuses rather than
-  # sending a merge request to the wrong forge.
+  # The merge path addresses a merge request through glab, rebuilding the
+  # project URL from the stored identity, and never reaches the GitHub CLI.
   write_task_meta "$dir" task-c
+  : > "$dir/glab.log"
+  : > "$dir/gh-axi.log"
   set +e
-  run_merge_entry "$dir" task-c "$url" >/dev/null 2>&1
+  FM_TEST_GLAB_MR_FACTS="$MR_HEAD opened $MR_HEAD success" \
+    run_merge_entry "$dir" task-c "$url" >/dev/null 2>&1
   rc=$?
   set -e
-  [ "$rc" -eq 2 ] || fail "merge wrapper did not refuse a GitLab merge request URL"
+  [ "$rc" -eq 0 ] || fail "merge wrapper did not merge a GitLab merge request"
+  grep -qxF "mr merge 7 --repo https://gitlab.example/group/subgroup/project --sha $MR_HEAD --auto-merge=false --yes --squash" \
+    "$dir/glab.log" \
+    || fail "merge wrapper did not address the merge request by its stored project identity with the head pinned"
   [ ! -s "$dir/gh-axi.log" ] || fail "merge wrapper reached the GitHub CLI for a GitLab URL"
 
   pass "GitLab merge requests are followed on any instance and never wake falsely"

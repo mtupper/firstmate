@@ -1,9 +1,12 @@
-# GitLab merge request watch verification
+# GitLab merge request verification
 
-Empirical record for the merge watch on GitLab, alongside the existing GitHub watch.
-Every command below was run on 2026-07-21 and its output is reproduced exactly.
+Empirical record for GitLab merge requests, alongside the existing GitHub pull request paths.
+Every command is reproduced with its exact output.
+The watch sections were run on 2026-07-21 against glab 1.53.0; the "Merging a merge request" section was run on 2026-08-28 against glab 1.113.0 and carries its own version block.
 
 ## Versions
+
+Versions for the watch sections below.
 
 ```
 $ glab --version
@@ -190,11 +193,76 @@ merged
 
 No armed watch is lost by upgrading.
 
-## What this change does not cover
+## Merging a merge request
 
-`bin/fm-pr-merge.sh` still addresses GitHub only, by owner and repository.
-It refuses a GitLab merge request URL rather than sending it to the wrong forge, so merging a merge request stays a deliberate manual step until merge parity lands separately.
+Recorded on 2026-08-28 against glab 1.113.0 on macOS 15 (Darwin 25.6.0).
 
-A GitLab task records no `pr_head=`.
-`gh` exposes the head commit as a selectable field, while plain `glab` exposes it only inside its JSON output, which would need a JSON processor firstmate does not require.
+`bin/fm-pr-merge.sh` merges a GitLab merge request through the same guarded path as a GitHub pull request.
+Only the execution step differs, so the facts that step depends on are pinned here.
+
+```
+$ glab --version
+glab 1.113.0 (d62881304)
+```
+
+The flags the guarded path relies on all exist, and the ones it does not have are why its defaults differ from the GitHub side:
+
+```
+$ glab mr merge --help
+  FLAGS
+    --auto-merge               Set auto-merge. (true)
+    -h --help                  Show help for this command.
+    -m --message               Custom merge commit message.
+    -r --rebase                Rebase the commits onto the base branch.
+    -d --remove-source-branch  Remove source branch on merge.
+    -R --repo                  Select another repository. You can use either OWNER/REPO or GROUP/NAMESPACE/REPO. The full URL or Git URL is also accepted.
+    --sha                      Merge only if the HEAD of the source branch matches this SHA. Use to ensure that only reviewed commits are merged.
+    -s --squash                Squash commits on merge.
+    --squash-message           Custom squash commit message.
+    -y --yes                   Skip submission confirmation prompt.
+```
+
+Four consequences follow directly from that list.
+`--sha` is what pins the reviewed head, so nothing pushed between review and merge can land.
+`--yes` is what keeps the path from hanging on a confirmation prompt.
+`--auto-merge` defaults to true, which would queue the merge behind a pipeline instead of performing it, so the guarded path passes `--auto-merge=false` and judges the pipeline itself.
+There is no `--merge` and no `--method`: a merge commit is expressed as the absence of `--squash` and `--rebase`, so `--squash=false` is how a caller asks for one.
+
+`-R` accepts a full project URL, which carries the host, so one form addresses gitlab.com and a self-hosted instance alike and overrides any ambient glab repository setting.
+The head and the head pipeline come from one read in that same form:
+
+```
+$ glab mr view 1 -R https://gitlab.com/KarotKris/gitlab-merge-watch-fixture --output json --jq '[.sha, .state, (.head_pipeline.sha // "-"), (.head_pipeline.status // "-")] | join(" ")'
+33762fcf6777c8d993220d25fb541e56c48081b9 merged - -
+
+$ glab mr view 2 -R https://gitlab.com/KarotKris/gitlab-merge-watch-fixture --output json --jq '[.sha, .state, (.head_pipeline.sha // "-"), (.head_pipeline.status // "-")] | join(" ")'
+66b8a6777bea5e291d7fa2fc20c42ad7686f6bc8 opened - -
+```
+
+`--jq` is glab's own filter, so no external JSON processor is involved.
+The fixture project has no CI, and that is what an absent pipeline looks like: `head_pipeline` is null and both fields read `-`.
+An absent pipeline is not a passing one, so the guarded path refuses it unless the caller passes `--allow-absent-pipeline`, which is recorded in the approval as `pipeline=absent-accepted`.
+A pipeline whose `head_pipeline.sha` is not the head being merged is refused with no override, because a pipeline for another commit says nothing about this one.
+The present-pipeline verdicts are exercised hermetically in `tests/fm-pr-merge.test.sh` rather than against a live project, so the classifier is enforced by CI on every run.
+
+An extra bare argument cannot redirect the merge to another merge request, because glab bounds its own positional arguments:
+
+```
+$ glab mr merge 1 extra -R https://gitlab.com/KarotKris/gitlab-merge-watch-fixture
+   ERROR
+  Accepts at most 1 arg(s), received 2.
+```
+
+That check happens before any network call, so the command above is safe to rerun.
+`--repo`, `-R`, `--sha`, and `--auto-merge` are still rejected in caller-supplied extra arguments, since each of those could redirect the project or defeat a guard.
+
+## Known limits
+
+A GitLab task records no `pr_head=` at arming time.
+`gh` exposes the head commit as a selectable field that `bin/fm-pr-check.sh` already reads, while `glab` exposes it inside JSON; the merge path reads it there when it needs to pin the head, and arming has never needed it.
 Both consumers already treat it as optional: `bin/fm-teardown.sh` reads the head from the forge at teardown rather than from metadata and falls back to its provider-agnostic content check, and `bin/fm-review-diff.sh` resolves the head from the remote when none is recorded.
+
+The GitHub path has no equivalent head pin.
+`gh pr merge` offers `--match-head-commit`, but `gh-axi pr merge`'s documented flags are `--method`, `--merge`, `--squash`, `--rebase`, `--auto`, `--delete-branch`, `--body`, and `--subject`, and passing `--match-head-commit` to it produced neither an error nor any visible effect.
+Wiring it in from here would therefore add an unverifiable no-op, which is worse than no pin at all because it reads like protection.
+Adding explicit passthrough to gh-axi is the prerequisite; the pin can follow in this script once it can be observed working.

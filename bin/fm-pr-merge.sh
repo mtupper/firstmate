@@ -1,19 +1,29 @@
 #!/usr/bin/env bash
-# Merge a task's PR after recording pr= and any available pr_head= through
+# Merge a task's PR or MR after recording pr= and any available pr_head= through
 # bin/fm-pr-check.sh, so teardown can verify landed work after squash merges.
-# The full canonical GitHub PR URL is parsed by bin/fm-pr-lib.sh and the derived
-# owner/repository and PR number are passed to gh-axi as separate arguments.
+# The full canonical URL is parsed by bin/fm-pr-lib.sh into a provider-tagged
+# identity, and the project is addressed from that identity alone.
 #
-# Merge method defaults to --squash when the caller passes none of --squash,
-# --merge, --rebase, or --method after the optional -- separator. Extra args
-# must not include --repo or -R because the repository comes only from the URL.
+# GitHub and GitLab both go through this one guarded path. Every check - task id
+# validation, authority parsing, the yolo=on meta check, PR metadata recording,
+# the symlink refusal, the different-PR refusal, and writing and confirming the
+# approval record - runs identically for both. Only the execution step differs:
+# `gh-axi pr merge` for github, `glab mr merge` for gitlab.
+#
+# Merge method defaults to --squash when the caller passes no strategy flag of
+# its own. On github that is --squash/--merge/--rebase/--method; on gitlab it is
+# --squash/-s/--rebase/-r, or any bundled shorthand containing s or r, since
+# `glab mr merge` has no --merge or --method flag and expresses a merge commit as
+# the absence of a strategy (pass --squash=false to get one). Extra args must not
+# redirect the project with --repo or -R, and on gitlab must not override the
+# --sha pin or --auto-merge, because both are guard flags rather than choices.
 #
 # MERGE AUTHORITY IS REQUIRED AND RECORDED. AGENTS.md hard rule 2 - never merge
 # without the captain's explicit word - had no runtime backing: this script used
 # to merge whatever URL it was handed. --authority now names which of the two
 # sanctioned authorities is being exercised, and the choice is written to
-# state/<id>.merge-approval before gh-axi is called, so every merge leaves a
-# durable record of what authorized it rather than only that it happened.
+# state/<id>.merge-approval before any merge command is called, so every merge
+# leaves a durable record of what authorized it rather than only that it happened.
 #
 #   --authority captain   the captain explicitly said to merge this PR.
 #   --authority yolo      the project's standing yolo posture covers it. Allowed
@@ -27,8 +37,33 @@
 # merge authority must be named and recorded, so an unauthorized merge requires a
 # deliberate false statement rather than an omission.
 #
+# GITLAB: THE HEAD IS PINNED AND THE PIPELINE MUST DESCRIBE IT.
+# Before merging, the merge request's own head commit is read from the forge and
+# passed to `glab mr merge --sha`, so nothing pushed between review and merge can
+# land. The merge request must be open, and its head pipeline is judged only by
+# the commit it actually ran on:
+#
+#   head pipeline on the head commit, status success  -> merge.
+#   head pipeline on the head commit, any other status -> refuse. No override.
+#   head pipeline on a DIFFERENT commit                -> refuse. No override.
+#     A pipeline for another commit says nothing about the one being merged, so
+#     it is never read as green. Re-run once the head's own pipeline exists.
+#   no head pipeline at all                            -> refuse, unless the
+#     caller passes --allow-absent-pipeline, which states that no runnable gate
+#     applies here and is recorded in the approval as pipeline=absent-accepted.
+#
+# Absent CI is the ordinary case on a repository that has none, so refusing it
+# outright would make this path unusable exactly where merges have to be made by
+# hand instead. Requiring the flag keeps that an explicit, recorded statement.
+#
+# GitHub carries no equivalent pin. `gh pr merge` has --match-head-commit, but
+# gh-axi's documented merge flags do not include it and it neither errors on nor
+# honors an unknown flag, so wiring it here would produce an unverifiable no-op.
+# Adding passthrough to gh-axi is the prerequisite; docs/gitlab-merge-watch.md
+# records that evidence and the glab facts this path depends on.
+#
 # Usage: fm-pr-merge.sh <task-id> <pr-url> --authority <captain|yolo>
-#          [-- <extra gh-axi pr merge args>]
+#          [--allow-absent-pipeline] [-- <extra forge merge args>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,23 +80,24 @@ if [ "$#" -lt 2 ]; then
 fi
 ID=$1
 RAW_URL=$2
-# bin/fm-pr-lib.sh parses GitLab merge request URLs so the watcher can follow
-# them, but this path still addresses only GitHub by owner/repository. The
-# provider check holds that refusal exactly as it was until merge parity lands.
-if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL" \
-  || [ "$FM_PR_PROVIDER" != github ]; then
+if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL"; then
   echo "error: invalid PR merge request" >&2
   exit 2
 fi
 URL=$FM_PR_URL
+PROVIDER=$FM_PR_PROVIDER
+PR_HOST=$FM_PR_HOST
+PR_PATH=$FM_PR_PATH
 PR_OWNER=$FM_PR_OWNER
 PR_REPO=$FM_PR_REPO
 PR_NUMBER=$FM_PR_NUMBER
 shift 2
 
-# --authority is read before the -- separator, so it can never be mistaken for a
-# gh-axi argument and gh-axi can never be handed it.
+# --authority and --allow-absent-pipeline are read before the -- separator, so
+# they can never be mistaken for a forge argument and the forge CLI can never be
+# handed them.
 AUTHORITY=""
+ALLOW_ABSENT_PIPELINE=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --authority)
@@ -71,6 +107,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --authority=*)
       AUTHORITY=${1#--authority=}
+      shift
+      ;;
+    --allow-absent-pipeline)
+      ALLOW_ABSENT_PIPELINE=1
       shift
       ;;
     *) break ;;
@@ -89,11 +129,26 @@ case "$AUTHORITY" in
     ;;
 esac
 
+if [ "$ALLOW_ABSENT_PIPELINE" = 1 ] && [ "$PROVIDER" != gitlab ]; then
+  echo "error: --allow-absent-pipeline applies only to a GitLab merge request" >&2
+  exit 2
+fi
+
 [ "${1:-}" = "--" ] && shift
 
 caller_has_merge_method() {
   local arg
   for arg in "$@"; do
+    if [ "$PROVIDER" = gitlab ]; then
+      # glab has no --merge or --method: a merge commit is the absence of a
+      # strategy. Bundled shorthand is treated as explicit rather than parsed,
+      # so an ambiguous group never collects a conflicting default as well.
+      case "$arg" in
+        --squash|--squash=*|--rebase|--rebase=*) return 0 ;;
+        -[!-]*) case "$arg" in *s*|*r*) return 0 ;; esac ;;
+      esac
+      continue
+    fi
     case "$arg" in
       --squash|--merge|--rebase|--method|--method=*) return 0 ;;
     esac
@@ -113,7 +168,24 @@ reject_repo_overrides() {
   done
 }
 
+# --sha and --auto-merge are guard flags on the gitlab path, not caller choices:
+# --sha pins the reviewed head and --auto-merge=false keeps the merge immediate
+# rather than deferred to a pipeline result this script did not judge.
+reject_guard_overrides() {
+  local arg
+  [ "$PROVIDER" = gitlab ] || return 0
+  for arg in "$@"; do
+    case "$arg" in
+      --sha|--sha=*|--auto-merge|--auto-merge=*)
+        echo "error: extra merge arguments must not override the head pin or auto-merge" >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
 reject_repo_overrides "$@" || exit 1
+reject_guard_overrides "$@" || exit 1
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
@@ -134,6 +206,52 @@ if [ "$AUTHORITY" = yolo ]; then
   fi
 fi
 
+# GitLab preflight. Read-only, and ahead of every state write, so a merge request
+# that must not be merged is refused without leaving a poll or approval behind.
+GITLAB_PROJECT=
+PINNED_HEAD=
+PIPELINE_RECORD=
+if [ "$PROVIDER" = gitlab ]; then
+  command -v glab >/dev/null 2>&1 || {
+    echo "error: merging a GitLab merge request requires glab on PATH" >&2
+    exit 1
+  }
+  # A full project URL carries the host, so this addresses a self-hosted
+  # instance as exactly as gitlab.com and ignores any ambient glab repo setting.
+  GITLAB_PROJECT="https://$PR_HOST/$PR_PATH"
+  MR_FACTS=$(glab mr view "$PR_NUMBER" --repo "$GITLAB_PROJECT" --output json \
+    --jq '[.sha, .state, (.head_pipeline.sha // "-"), (.head_pipeline.status // "-")] | join(" ")' 2>/dev/null) || {
+    echo "error: could not read merge request $PR_NUMBER from $GITLAB_PROJECT" >&2
+    exit 1
+  }
+  MR_HEAD=; MR_STATE=; PIPELINE_SHA=; PIPELINE_STATUS=
+  IFS=' ' read -r MR_HEAD MR_STATE PIPELINE_SHA PIPELINE_STATUS <<< "$MR_FACTS" || true
+  fm_pr_head_valid "${MR_HEAD:-}" || {
+    echo "error: could not resolve the head commit of $URL; refusing to merge an unpinned merge request" >&2
+    exit 1
+  }
+  if [ "${MR_STATE:-}" != opened ]; then
+    echo "error: merge request $URL is ${MR_STATE:-unknown}, not open" >&2
+    exit 1
+  fi
+  if [ "${PIPELINE_SHA:-}" = "-" ] && [ "${PIPELINE_STATUS:-}" = "-" ]; then
+    if [ "$ALLOW_ABSENT_PIPELINE" != 1 ]; then
+      echo "error: merge request $URL has no pipeline on its head commit $MR_HEAD; an absent pipeline is not a passing one, so pass --allow-absent-pipeline to state that no runnable gate applies here" >&2
+      exit 1
+    fi
+    PIPELINE_RECORD="pipeline=absent-accepted"
+  elif [ "${PIPELINE_SHA:-}" != "$MR_HEAD" ]; then
+    echo "error: the head pipeline of $URL ran on ${PIPELINE_SHA:-unknown}, not on the head commit $MR_HEAD being merged, so it says nothing about it; re-run once the head's own pipeline exists" >&2
+    exit 1
+  elif [ "${PIPELINE_STATUS:-}" != success ]; then
+    echo "error: the pipeline for head commit $MR_HEAD of $URL is ${PIPELINE_STATUS:-unknown}, not success" >&2
+    exit 1
+  else
+    PIPELINE_RECORD="pipeline=success:$PIPELINE_SHA"
+  fi
+  PINNED_HEAD=$MR_HEAD
+fi
+
 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
 grep -qxF "pr=$URL" "$META" || {
   echo "error: PR metadata recording failed" >&2
@@ -141,7 +259,7 @@ grep -qxF "pr=$URL" "$META" || {
 }
 
 # Durable before destructive: the record of what authorized this merge is written
-# and confirmed on disk BEFORE gh-axi is called, so an interrupted or failed
+# and confirmed on disk BEFORE the forge is called, so an interrupted or failed
 # merge still leaves evidence of the decision that was made.
 APPROVAL="$STATE/$ID.merge-approval"
 if [ -L "$APPROVAL" ]; then
@@ -155,7 +273,10 @@ fi
 {
   echo "task=$ID"
   echo "pr=$URL"
+  echo "provider=$PROVIDER"
   echo "authority=$AUTHORITY"
+  [ -z "$PINNED_HEAD" ] || echo "pinned_head=$PINNED_HEAD"
+  [ -z "$PIPELINE_RECORD" ] || echo "$PIPELINE_RECORD"
   echo "recorded=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 } > "$APPROVAL" || {
   echo "error: could not record the merge approval for $ID" >&2
@@ -165,10 +286,22 @@ grep -qxF "authority=$AUTHORITY" "$APPROVAL" || {
   echo "error: merge approval recording failed for $ID" >&2
   exit 1
 }
+if [ -n "$PINNED_HEAD" ] && ! grep -qxF "pinned_head=$PINNED_HEAD" "$APPROVAL"; then
+  echo "error: merge approval recording failed for $ID" >&2
+  exit 1
+fi
 
 merge_args=()
 if ! caller_has_merge_method "$@"; then
   merge_args=(--squash)
 fi
 
-gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+if [ "$PROVIDER" = gitlab ]; then
+  # --yes skips glab's confirmation prompt and --auto-merge=false keeps the
+  # merge immediate, so a guarded path can neither hang on a human nor report
+  # success for a merge that was only queued behind a pipeline.
+  glab mr merge "$PR_NUMBER" --repo "$GITLAB_PROJECT" --sha "$PINNED_HEAD" \
+    --auto-merge=false --yes "${merge_args[@]+"${merge_args[@]}"}" "$@"
+else
+  gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+fi
