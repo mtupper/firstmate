@@ -45,8 +45,36 @@ fm_harness_path_name() {  # <path>
   return 1
 }
 
+# True when argument string $1, with its first $2 tokens removed, begins with a
+# background-host subcommand. A shared `claude daemon run` process carries the
+# harness name but is NOT a session: it is long-lived and parents work for many
+# sessions, so a lock recording its pid looks live forever and permanently locks
+# the home out (hit for real on 2026-08-29). The skip count exists because the
+# harness name sits in a different argv slot per evidence branch: argv[0] for a
+# direct invocation, argv[1] when a bare interpreter runs the harness script.
+# Only the exact `daemon` subcommand token is excluded; per-session workers such
+# as `claude bg-spare` stay inside the harness identity because they die with
+# their session and sit inside its contiguous ancestry run.
+fm_harness_background_host() {  # <args> <skip-tokens>
+  local rest=$1 skip=$2 i=0
+  while [ "$i" -lt "$skip" ]; do
+    case "$rest" in
+      *' '*) rest=${rest#* } ;;
+      *) return 1 ;;
+    esac
+    i=$((i + 1))
+  done
+  case "$rest" in
+    daemon|daemon' '*) return 0 ;;
+  esac
+  return 1
+}
+
 # True when the process described by command name $1 and full argument string $2
-# is a verified harness. Sets FM_HARNESS_IS_CLAUDE for the ancestry walk.
+# is a verified harness SESSION process. A background host (see above) carries a
+# harness name but never matches, so it can neither be recorded as a lock owner
+# nor keep a recorded lock looking live. Sets FM_HARNESS_IS_CLAUDE for the
+# ancestry walk.
 #
 # Evidence, in order:
 #   1. the basename of the reported command name, against FM_HARNESS_RE.
@@ -63,11 +91,13 @@ fm_harness_process_matches() {  # <comm> <args>
   FM_HARNESS_IS_CLAUDE=0
   base=$(basename -- "$comm")
   if printf '%s' "$base" | grep -qE "$FM_HARNESS_RE"; then
+    fm_harness_background_host "$args" 1 && return 1
     case "$base" in *claude*) FM_HARNESS_IS_CLAUDE=1 ;; esac
     return 0
   fi
   argv0=${args%% *}
   if name=$(fm_harness_path_name "$comm") || name=$(fm_harness_path_name "$argv0"); then
+    fm_harness_background_host "$args" 1 && return 1
     case "$name" in claude) FM_HARNESS_IS_CLAUDE=1 ;; esac
     return 0
   fi
@@ -75,6 +105,7 @@ fm_harness_process_matches() {  # <comm> <args>
   case "$comm" in
     *node*|*python*)
       if printf '%s' "$args" | grep -qE "$FM_HARNESS_RE"; then
+        fm_harness_background_host "$args" 2 && return 1
         case "$args" in *claude*) FM_HARNESS_IS_CLAUDE=1 ;; esac
         return 0
       fi
