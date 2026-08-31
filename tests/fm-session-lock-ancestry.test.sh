@@ -220,6 +220,85 @@ SH
   pass "session-lock: a live version-named session holding the lock is not mistaken for a stale owner"
 }
 
+test_background_daemon_is_never_a_session_identity() {
+  local dir fakebin got
+  dir="$TMP_ROOT/bg-daemon"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  # The 2026-08-29 incident shape: a shared `claude daemon run` background host
+  # (pid 300) parents this session's processes. pid 200 is the genuine session.
+  # In the latched shape the hook shell hangs directly off the daemon with no
+  # session in between.
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field" in
+  200:comm=) printf '%s\n' claude ;;
+  200:args=) printf '%s\n' claude ;;
+  200:ppid=) printf '%s\n' 300 ;;
+  300:comm=) printf '%s\n' claude ;;
+  300:args=) printf '%s\n' 'claude daemon run --origin transient --spawned-by {"pid":49998}' ;;
+  300:ppid=) printf '%s\n' 1 ;;
+  310:comm=) printf '%s\n' '2.1.220' ;;
+  310:args=) printf '%s\n' '/opt/claude/versions/2.1.220 daemon run --origin transient' ;;
+  310:ppid=) printf '%s\n' 1 ;;
+  320:comm=) printf '%s\n' node ;;
+  320:args=) printf '%s\n' 'node /opt/claude/cli.js daemon run' ;;
+  320:ppid=) printf '%s\n' 1 ;;
+  330:comm=) printf '%s\n' node ;;
+  330:args=) printf '%s\n' 'node /opt/claude/cli.js --resume' ;;
+  330:ppid=) printf '%s\n' 1 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' 'bash /repo/bin/fm-claude-stop-autoarm.sh' ;;
+  *:ppid=) printf '%s\n' "${FM_TEST_HOOK_PARENT:-200}" ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+
+  # The daemon never keeps a recorded lock looking live; a plain session does.
+  if lib_eval "$fakebin" 'fm_harness_pid_alive 300'; then
+    fail "a live 'claude daemon run' background host passed the harness-liveness predicate"
+  fi
+  lib_eval "$fakebin" 'fm_harness_pid_alive 200' \
+    || fail "a plain claude session argv was rejected by the harness-liveness predicate"
+  if lib_eval "$fakebin" 'fm_harness_pid_alive 310'; then
+    fail "a version-named 'daemon run' background host passed the harness-liveness predicate"
+  fi
+  if lib_eval "$fakebin" 'fm_harness_pid_alive 320'; then
+    fail "an interpreter-run 'daemon run' background host passed the harness-liveness predicate"
+  fi
+  lib_eval "$fakebin" 'fm_harness_pid_alive 330' \
+    || fail "an interpreter-run claude session was rejected by the harness-liveness predicate"
+
+  # The ancestry walk stops below the daemon: the session pid is recorded, and
+  # a lock naming the daemon is never this session's own.
+  got=$(lib_eval "$fakebin" 'fm_harness_ancestry_pid') \
+    || fail "the genuine session below the daemon was not found in the ancestry"
+  [ "$got" = 200 ] || fail "ancestry resolved '$got', expected the session pid 200, never the daemon 300"
+  printf '300\n' > "$dir/state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'"; then
+    fail "a lock naming the shared daemon was claimed as this session's own"
+  fi
+  printf '200\n' > "$dir/state/.lock"
+  lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" \
+    || fail "the genuine session under the daemon did not recognize its own lock"
+
+  # Latched shape: the hook shell hangs directly off the daemon. The walk must
+  # fail toward no identity rather than latch onto the shared daemon.
+  if FM_TEST_HOOK_PARENT=300 lib_eval "$fakebin" 'fm_harness_ancestry_pid'; then
+    fail "with only the daemon above, the ancestry walk latched onto the shared daemon"
+  fi
+  pass "session-lock: a 'claude daemon run' background host is never a session identity"
+}
+
 # --- end-to-end layer: the real Stop auto-arm in real process trees ----------
 
 install_autoarm_scripts() {
@@ -266,7 +345,9 @@ if [ "${FM_FIXTURE_ORPHAN_HERE:-0}" = 1 ]; then
   done
 fi
 printf '%s\n' "$$" > "$FM_HOME/state/session-pid"
-printf '%s\n' "$$" > "$FM_HOME/state/.lock"
+if [ "${FM_FIXTURE_PRESET_LOCK:-0}" != 1 ]; then
+  printf '%s\n' "$$" > "$FM_HOME/state/.lock"
+fi
 "$FM_HOME/bin/fm-claude-stop-autoarm.sh" </dev/null > "$FM_HOME/state/hook.out" 2>&1
 printf '%s\n' "$?" > "$FM_HOME/state/hook.rc"
 SH
@@ -356,10 +437,48 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
   pass "session-lock e2e: a version-named session under a harness-named daemon keeps its own lock"
 }
 
+test_e2e_stale_daemon_lock_is_reclaimed_by_a_live_session() {
+  local dir bg_pid session_pid lock_after i
+  dir="$TMP_ROOT/e2e-stale-daemon-lock"
+  make_primary_home "$dir"
+  # A real long-lived background host whose ps argv is exactly the incident's
+  # `claude daemon run ...` shape: bash invoked through the claude-named link
+  # resolves the relative script `daemon` while argv[1] stays the bare token.
+  cat > "$dir/daemon" <<'SH'
+printf '%s\n' "$$" > "$FM_HOME/state/bg-daemon-pid"
+while :; do sleep 1; done
+SH
+  ( cd "$dir" && FM_HOME="$dir" "$NAMED_CLAUDE" daemon run --origin transient ) &
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$dir/state/bg-daemon-pid" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  bg_pid=$(tr -d '[:space:]' < "$dir/state/bg-daemon-pid")
+  if [ -z "$bg_pid" ] || ! kill -0 "$bg_pid" 2>/dev/null; then
+    fail "the fixture background host never started"
+  fi
+  # The incident state: the lock names the live shared daemon, not any session.
+  printf '%s\n' "$bg_pid" > "$dir/state/.lock"
+
+  FM_FIXTURE_PRESET_LOCK=1 run_fixture_tree "$dir" "$NAMED_CLAUDE"
+  session_pid=$(tr -d '[:space:]' < "$dir/state/session-pid")
+  lock_after=$(tr -d '[:space:]' < "$dir/state/.lock")
+  kill -0 "$bg_pid" 2>/dev/null || fail "the fixture background host died before the verdict"
+  kill "$bg_pid" 2>/dev/null
+  expect_code 2 "$(hook_rc "$dir")" "a live session must reclaim a lock naming a live 'daemon run' background host"
+  [ "$lock_after" = "$session_pid" ] \
+    || fail "the lock was not reclaimed onto the session: expected $session_pid, got $lock_after (daemon $bg_pid)"
+  [ -e "$dir/state/arm-ran" ] || fail "supervision never armed after reclaiming the daemon-held lock"
+  pass "session-lock e2e: a lock naming a live 'claude daemon run' host is stale and reclaimed by the real session"
+}
+
 test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live
+test_background_daemon_is_never_a_session_identity
 test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
 test_e2e_daemon_parented_version_named_session_keeps_its_lock
+test_e2e_stale_daemon_lock_is_reclaimed_by_a_live_session
