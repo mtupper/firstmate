@@ -161,9 +161,12 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # between completed turns, including long tool calls, builds, or test runs.
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A crew that declared a pause is idling on a known external wait, so its stale
-# pane is absorbed rather than wedge-escalated.
-# A captain-held or paused crew whose agent has confidently exited uses the same
-# bounded cadence, while a live or ambiguously read agent still surfaces once.
+# pane is absorbed rather than wedge-escalated - with a LIVE agent as much as a
+# dead one, because a live, deliberately idling agent is the normal declared-pause
+# shape (bin/fm-brief.sh rule 4). A captain-held crew, or one whose state reader
+# fell back to stopped/unknown, gets the same bounded cadence only once its agent
+# has confidently exited; a live or ambiguously read agent there still surfaces
+# once, so a silenced decision gate is never hidden.
 # These cases re-surface once for a recheck every PAUSE_RESURFACE_SECS - far
 # longer than the wedge threshold, but finite so a forgotten hold cannot rot invisibly.
 PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
@@ -332,7 +335,9 @@ busy_turn_over_age() {  # <task>
 # clock, a token counter) cannot keep resetting the cadence the way a hash-tied
 # timer would. A .paused-resurfaced-<key> throttle marker records the last
 # re-surface epoch so, once past the window, it fires once per window rather than
-# every poll. Advances the stale suppressor to <hash> and flags the key paused.
+# every poll; it survives transient tracking clears (see clear_pause_state) and
+# retires only with the pause itself. Advances the stale suppressor to <hash>
+# and flags the key paused.
 handle_paused_stale() {  # <window> <task> <hash>
   local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age reason
   key=$(printf '%s' "$win" | tr ':/.' '___')
@@ -354,12 +359,20 @@ handle_paused_stale() {  # <window> <task> <hash>
   triage_log "absorbed stale (paused, awaiting external, age ${age}s): $win"
 }
 
+# Drop the pause-cadence flags while PRESERVING the .paused-resurfaced-<key>
+# throttle. These clears fire on transient conditions - a busy blip, a churny
+# idle pane re-rendering, a cached verdict expiring - and erasing the throttle
+# there made the very next stale poll re-fire the "confirm the wait still
+# holds" re-surface immediately, because handle_paused_stale's age gate is
+# anchored on the status file's mtime, which stays old for the whole declared
+# wait (the 2026-08 short-cadence pause-nag defect). Only a genuinely ended
+# pause retires the throttle (clear_pause_resurface_throttle).
 clear_pause_state() {  # <window>
   local win=$1 key
   key=${win//:/_}
   key=${key//\//_}
   key=${key//./_}
-  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key"
 }
 
 clear_pause_tracking() {  # <window>
@@ -371,9 +384,28 @@ clear_pause_tracking() {  # <window>
   rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
 }
 
+# Retire the re-surface throttle: call only when the declared pause or hold has
+# genuinely ended (the last status line moved off paused/captain-held), so the
+# next declared wait starts its own cadence from its own status append.
+clear_pause_resurface_throttle() {  # <window>
+  local win=$1 key
+  key=${win//:/_}
+  key=${key//\//_}
+  key=${key//./_}
+  rm -f "$STATE/.paused-resurfaced-$key"
+}
+
 # Reconcile a declared pause or captain-held status with authoritative crew state.
-# Only a confidently dead ordinary crew may recover paused classification after
-# fm-crew-state has fallen back to stopped or unknown.
+# A crew whose authoritative current state IS the declared pause keeps the bounded
+# cadence with a live agent: a live, deliberately idling agent is the normal
+# declared-pause shape (bin/fm-brief.sh rule 4), and handle_paused_stale's bounded
+# re-surface still rechecks it once per PAUSE_RESURFACE_SECS, so a mistaken or
+# forgotten pause cannot rot invisibly. Only the RECOVERY of a non-paused reading
+# (captain-held, or a stopped/unknown fallback after the agent exited) requires
+# confident agent death, so a live agent at a silenced decision gate still
+# surfaces once. A fresh .paused-rechecked-<key> caches a paused verdict for
+# STALE_ESCALATE_SECS so the costly reads run once per window, not every poll;
+# an agent state change is picked up by the next full recheck.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class agent_alive
   key=${win//:/_}
@@ -387,14 +419,6 @@ pause_state_class() {  # <window> <task>
     return
   fi
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
-    if [ "$(window_kind "$win")" != secondmate ]; then
-      agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-      if [ "$agent_alive" != dead ]; then
-        rm -f "$recheck_file"
-        printf 'none'
-        return
-      fi
-    fi
     printf 'paused'
     return
   fi
@@ -404,15 +428,15 @@ pause_state_class() {  # <window> <task>
     printf 'working'
     return
   fi
-  if [ "$(window_kind "$win")" != secondmate ]; then
+  if [ "$class" != paused ] && [ "$(window_kind "$win")" != secondmate ]; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
     if [ "$agent_alive" != dead ]; then
       rm -f "$recheck_file"
       printf 'none'
       return
     fi
+    class=paused
   fi
-  [ "$class" = none ] && [ "${agent_alive:-unknown}" = dead ] && class=paused
   case "$class" in
     paused) date +%s > "$recheck_file" ;;
     *) rm -f "$recheck_file" ;;
@@ -1042,8 +1066,9 @@ EOF
     key=${key//\//_}
     key=${key//./_}
     last=$(last_status_line "$STATE/$task.status")
-    if ! status_is_paused_or_captain_held "$last" && [ -e "$STATE/.paused-$key" ]; then
-      clear_pause_tracking "$w"
+    if ! status_is_paused_or_captain_held "$last"; then
+      [ -e "$STATE/.paused-$key" ] && clear_pause_tracking "$w"
+      clear_pause_resurface_throttle "$w"
     fi
     if [ "$kind" = secondmate ] && ! status_is_paused "$last"; then
       continue
