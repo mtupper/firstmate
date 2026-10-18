@@ -32,6 +32,18 @@ export function encodeFirstmateOperationalInput(root, kind, content) {
       }
       reject(new Error(stderr.trim() || `operational-input encoder exited ${code ?? "unknown"}`));
     });
-    child.stdin.end(content);
+    writeStdin(child, content);
   });
+}
+
+// Same early-close contract as fm-primary-turnend-guard.js: an encoder that
+// exits before reading stdin closes the peer, and the pending write surfaces as
+// an EPIPE "error" event on child.stdin. The "close" exit code already decides
+// the result, so absorb the stream error instead of letting it go unhandled.
+function writeStdin(child, content) {
+  const stdin = child.stdin;
+  if (!stdin) return;
+  stdin.on("error", () => {});
+  if (stdin.destroyed || !stdin.writable) return;
+  stdin.end(content);
 }
