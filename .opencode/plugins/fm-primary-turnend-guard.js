@@ -22,8 +22,21 @@ function runProcess(command, args, input = "") {
     });
     child.on("error", () => resolve({ code: 0, stdout: "", stderr: "" }));
     child.on("close", (code) => resolve({ code: code ?? 0, stdout, stderr }));
-    child.stdin.end(input);
+    writeStdin(child, input);
   });
+}
+
+// A guard that exits before reading its stdin closes the pipe's read end
+// while the parent's write may still be pending, so the write surfaces as an
+// EPIPE "error" event on child.stdin. Without a listener that event is
+// unhandled and kills the host process. The exit code on "close" already
+// decides the outcome, so an early close is benign and only needs to be absorbed.
+function writeStdin(child, input) {
+  const stdin = child.stdin;
+  if (!stdin) return;
+  stdin.on("error", () => {});
+  if (stdin.destroyed || !stdin.writable) return;
+  stdin.end(input);
 }
 
 async function resolveRoot(anchor) {

@@ -2212,6 +2212,81 @@ EOF
   pass "OpenCode healthy arm output does not suppress the turn-end guard"
 }
 
+# CI flake regression: the plugin's process lost the CPU between spawning the
+# guard and writing its stdin, the guard exited without reading, and the write
+# then met a closed pipe peer. Node surfaced that as an unhandled EPIPE "error"
+# event on child.stdin and killed the host process. The preload below recreates
+# that preemption with real signals: node stops itself right after the real
+# spawn returns, the guard closes its stdin and resumes node, and only then does
+# the plugin's write run. No plugin behavior is stubbed, only the scheduling.
+test_opencode_turnend_guard_survives_closed_stdin_peer() {
+  local guard_plugin repo home guard_log preload out status
+  guard_plugin="$ROOT/.opencode/plugins/fm-primary-turnend-guard.js"
+  repo="$TMP_ROOT/opencode-closed-stdin-root"
+  home="$TMP_ROOT/opencode-closed-stdin-home"
+  guard_log="$TMP_ROOT/opencode-closed-stdin-guard.log"
+  preload="$TMP_ROOT/opencode-closed-stdin-preempt.mjs"
+  mkdir -p "$repo/bin" "$home/state"
+  git init -q "$repo"
+  cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/fm-operational-input.sh"
+  cat > "$repo/bin/fm-turnend-guard.sh" <<'SH'
+#!/usr/bin/env bash
+exec 0<&-
+printf 'guard\n' >> "${FM_GUARD_LOG:?}"
+kill -CONT "$PPID"
+sleep 0.3
+printf 'guard ran with a closed stdin\n' >&2
+exit 2
+SH
+  chmod +x "$repo/bin/fm-turnend-guard.sh"
+  cat > "$preload" <<'JS'
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+
+const realSpawn = childProcess.spawn;
+childProcess.spawn = (command, ...rest) => {
+  const child = realSpawn(command, ...rest);
+  if (String(command).endsWith("/bin/fm-turnend-guard.sh")) {
+    process.kill(process.pid, "SIGSTOP");
+  }
+  return child;
+};
+syncBuiltinESMExports();
+JS
+  out=$(GUARD_PLUGIN="$guard_plugin" WORKTREE="$repo" FM_HOME="$home" FM_GUARD_LOG="$guard_log" node --import "$preload" 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+
+const guardMod = await import(pathToFileURL(process.env.GUARD_PLUGIN).href);
+let promptBody = "";
+const client = {
+  session: {
+    promptAsync: async (request) => {
+      promptBody = request.body.parts[0].text;
+    },
+  },
+};
+const guardHooks = await guardMod.FmPrimaryTurnendGuard({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+await guardHooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
+if (!promptBody.includes("TURN WOULD END BLIND")) {
+  console.error(`missing blind-turn prompt: ${promptBody}`);
+  process.exit(1);
+}
+if (!promptBody.includes("guard ran with a closed stdin")) {
+  console.error(`guard stderr was not relayed: ${promptBody}`);
+  process.exit(1);
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "OpenCode turn-end guard must survive a guard that closes stdin before the write lands${out:+: $out}"
+  [ -f "$guard_log" ] || fail "turn-end guard did not run"
+  pass "OpenCode turn-end guard survives a closed stdin peer"
+}
+
 test_pi_extension_reports_external_healthy_watcher
 test_pi_tool_returns_agent_tool_result
 test_pi_redundant_tool_call_is_owned_noop
@@ -2242,3 +2317,4 @@ test_opencode_established_empty_close_honors_retry_limit
 test_opencode_actionable_close_rechecks_session_lock
 test_opencode_watch_arm_coordinates_with_turnend_guard
 test_opencode_healthy_arm_output_does_not_suppress_guard
+test_opencode_turnend_guard_survives_closed_stdin_peer
