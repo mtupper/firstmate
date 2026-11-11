@@ -47,24 +47,50 @@ chmod +x "$LAB/shim/tmux"
 PATH="$LAB/shim:$PATH"
 export PATH
 
-# Stand-in "harness" binaries. These are SYMLINKS to a real long-running system
-# binary, never copies: a copied platform binary fails code-signing validation
-# and is killed on macOS arm64. The symlink name is what the kernel records as
-# the executable identity, which is exactly the signal under test.
-ln -s "$SLEEP_BIN" "$LAB/bin/claude-link"
-ln -s "$SLEEP_BIN" "$LAB/bin/pi"
-ln -s "$SLEEP_BIN" "$LAB/bin/notaharness"
+# Stand-in "harness" binaries: long-running executables whose file name is what
+# the kernel records as the executable identity, which is exactly the signal
+# under test. A symlink to the system sleep is the cheapest, never a copy: a
+# copied platform binary fails code-signing validation and is killed on macOS
+# arm64. A multi-call coreutils sleep (uutils, the default on Ubuntu 26.04)
+# refuses to run under any other name or argv[0], so where the probe below
+# shows that, each stand-in is a tiny compiled sleeper instead, which the
+# linker signs ad hoc on macOS. Both kinds ignore their arguments' meaning
+# beyond running until the private tmux server is killed.
+probe_out=$(ln -s "$SLEEP_BIN" "$LAB/probe-harness-name" 2>&1 \
+  && "$LAB/probe-harness-name" 0 2>&1 \
+  && bash -c "exec -a 2.1.220 '$LAB/probe-harness-name' 0" 2>&1) && STAND_IN=symlink || STAND_IN=
+if [ -z "$STAND_IN" ]; then
+  CC_BIN=$(command -v cc 2>/dev/null || command -v gcc 2>/dev/null || true)
+  printf '%s\n' '#include <unistd.h>' 'int main(void){for(;;)sleep(60);return 0;}' > "$LAB/stand-in.c"
+  if [ -n "$CC_BIN" ] && "$CC_BIN" -o "$LAB/probe-compiled" "$LAB/stand-in.c" 2>/dev/null; then
+    STAND_IN=compiled
+  else
+    echo "skip: $SLEEP_BIN refuses to run under another name ($probe_out) and no C compiler can build a stand-in"
+    exit 0
+  fi
+fi
+make_stand_in() {  # <path>
+  if [ "$STAND_IN" = symlink ]; then
+    ln -s "$SLEEP_BIN" "$1" || fail "could not create stand-in $1"
+  else
+    cp "$LAB/probe-compiled" "$1" 2>/dev/null && chmod +x "$1" \
+      || "$CC_BIN" -o "$1" "$LAB/stand-in.c" || fail "could not build stand-in $1"
+  fi
+}
+make_stand_in "$LAB/bin/claude-link"
+make_stand_in "$LAB/bin/pi"
+make_stand_in "$LAB/bin/notaharness"
 # muse's installed binary is muse-bin-<version>: the launcher execs it, so the
 # version is the LIVE process name and it changes on every auto-update. Unlike
 # Claude Code's version-named binary there is no `muse` path component to fall
 # back on (~/.local/bin/muse-bin-<version>), so the executable name is the ONLY
 # signal, and `muse` alone is a common English fragment that must not widen into
 # a substring match. The last two names are the decoys that would be misread.
-ln -s "$SLEEP_BIN" "$LAB/bin/muse-bin-0.1.0-R708.1"
-ln -s "$SLEEP_BIN" "$LAB/bin/musescore"
-ln -s "$SLEEP_BIN" "$LAB/bin/amuse"
-ln -s "$SLEEP_BIN" "$LAB/bin/muse-binary"
-ln -s "$SLEEP_BIN" "$LAB/bin/muse-bind"
+make_stand_in "$LAB/bin/muse-bin-0.1.0-R708.1"
+make_stand_in "$LAB/bin/musescore"
+make_stand_in "$LAB/bin/amuse"
+make_stand_in "$LAB/bin/muse-binary"
+make_stand_in "$LAB/bin/muse-bind"
 
 # A launcher whose own process identity is a bare shell, running the harness as
 # a child in the same foreground process group - the shape the real Pi Launcher
@@ -146,9 +172,9 @@ assert_sources_disagree() {  # <target> <label>
 
 # --- a harness-named foreground process -------------------------------------
 # Invoking the symlink by its harness name proves the ordinary positive path
-# with a real process. macOS exposes different names for the symlink through
-# tmux and ps, while Linux can expose the symlink name through both, so the
-# version-string case below owns the cross-platform divergence assertion.
+# with a real process. macOS exposes different names for a symlinked stand-in
+# through tmux and ps, while Linux can expose the stand-in name through both, so
+# the version-string case below owns the cross-platform divergence assertion.
 
 new_window agent "$LAB/bin/claude-link" 900
 wait_for_state "$SESSION:agent" alive \
@@ -268,8 +294,8 @@ pass "tmux liveness: an absent window classifies missing rather than inheriting 
 # shellcheck source=bin/fm-tmux-lib.sh
 . "$ROOT/bin/fm-tmux-lib.sh"
 
-ln -s "$SLEEP_BIN" "$LAB/bin/cursor-agent"
-ln -s "$SLEEP_BIN" "$LAB/bin/notcursor"
+make_stand_in "$LAB/bin/cursor-agent"
+make_stand_in "$LAB/bin/notcursor"
 
 # Cursor's real screen shape: a BARE composer row carrying its U+2192 glyph, two
 # footer rows below it, and the terminal cursor left on a blank row past the
