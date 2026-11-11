@@ -33,6 +33,15 @@ if [ "${1:-}" = "status" ]; then
   exit 0
 fi
 
+# Taking a home's helm from a process whose inherited environment names another
+# home than the one it runs in would let one session mutate another home.
+# shellcheck source=bin/fm-primary-scope-lib.sh
+. "$SCRIPT_DIR/fm-primary-scope-lib.sh"
+if ! fm_home_identity_check "$FM_HOME" "$STATE"; then
+  echo "error: $FM_HOME_IDENTITY_REASON Operate read-only until resolved." >&2
+  exit 1
+fi
+
 me=$(fm_harness_ancestry_pid) || { echo "error: cannot locate harness process in ancestry" >&2; exit 1; }
 probe=$(mktemp "$STATE/.lock-write.XXXXXX" 2>/dev/null) || {
   echo "error: cannot write session lock; operate read-only until resolved" >&2

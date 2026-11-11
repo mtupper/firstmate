@@ -255,6 +255,14 @@ No Herdr-specific copy of that protocol exists.
 ## Restart and liveness behavior
 
 Stopping and restarting a named Herdr server preserves workspace, tab, pane, and label ids, but the underlying harness processes and live agent registrations do not survive.
+Since Herdr 0.8, with its default `resume_agents_on_restore = true`, a restart or reboot resumes each supported agent whose official integration reported a session reference: Herdr starts a fresh shell in the pane's recorded directory and types the agent's resume command, such as `claude --resume <id>`, into it.
+That shell has the server's environment and none of the launch command fm-spawn typed, so Firstmate makes both inputs belong to the task rather than to whoever started the server:
+
+- Every server start, in the adapter and in `bin/fm-herdr-lab.sh`, runs from `$HOME` with the daemon scope of `bin/fm-env-scrub-lib.sh` cleared, so a server started by an endpoint read inside a firstmate session keeps none of that session's home, state, harness-session, or pane identity.
+- A ship or scout endpoint is created inside its leased worktree, so the directory Herdr records and restores is the worktree, never the primary clone.
+- A restored agent then resolves its home from the checkout it runs in, and `bin/fm-primary-scope-lib.sh`'s home-identity backstop refuses any hook, wake drain, or session lock whose environment still names another firstmate home.
+- `bin/fm-control.sh <id> relaunch` moves an agent-free restored shell into the recorded worktree before it proves the endpoint, then launches through `bin/fm-agent-env.sh`.
+
 A restored same-labeled tab with a missing pane or no registered agent is a husk.
 Create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
 This prevents closing the workspace's last tab before a replacement exists.
@@ -319,6 +327,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
   The tmux backend has a busy-queue fallback, but Herdr still reports this case as submit pending and needs a separate adapter fix.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
+- A Herdr server started outside Firstmate keeps its starter's environment; agents restored there are refused by the home-identity backstop until a relaunch, and endpoints created before worktree leasing still restore into their project directory.
 
 ## Regression entry points
 
@@ -333,6 +342,8 @@ tests/fm-backend-herdr-presentation-e2e.test.sh
 tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
+tests/fm-herdr-restore-identity-e2e.test.sh
+FM_HERDR_RESTORE_LIVE_E2E=1 tests/fm-herdr-restore-identity-live-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```

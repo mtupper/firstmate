@@ -144,26 +144,27 @@ PARK_CHILD='
 '
 
 # Run the park as a child of the fake cursor harness that holds the home lock.
-run_park() {  # <dir> [loop_count] [loop_ceiling]
+# Hooks run in the session's own project directory, so each runs from <dir>.
+run_park() (  # <dir> [loop_count] [loop_ceiling]
   local dir=$1 loop=${2:-0} ceiling=${3:-} payload
   payload=$(printf '{"session_id":"sess-cursor","generation_id":"gen-%s","loop_count":%s,"status":"completed","hook_event_name":"stop","cursor_version":"2026.08.11-e8db854"}' "$loop" "$loop")
   if [ -n "$ceiling" ]; then
-    printf '%s' "$payload" | FM_HOME="$dir" FM_CURSOR_PARK_POLL=1 \
+    cd "$dir" && printf '%s' "$payload" | FM_HOME="$dir" FM_CURSOR_PARK_POLL=1 \
       FM_CURSOR_TURNEND_LOOP_CEILING="$ceiling" "$FAKE_CURSOR" -c "$PARK_CHILD" 2>/dev/null
   else
-    printf '%s' "$payload" | FM_HOME="$dir" FM_CURSOR_PARK_POLL=1 \
+    cd "$dir" && printf '%s' "$payload" | FM_HOME="$dir" FM_CURSOR_PARK_POLL=1 \
       "$FAKE_CURSOR" -c "$PARK_CHILD" 2>/dev/null
   fi
-}
+)
 
-run_session() {  # <dir> <event> <source> [session-id]
+run_session() (  # <dir> <event> <source> [session-id]
   local dir=$1 event=$2 source=$3 session_id=${4:-sess-cursor} payload
   payload=$(printf '{"hook_event_name":"%s","session_id":"%s","cursor_version":"x"}' "$event" "$session_id")
-  printf '%s' "$payload" | FM_HOME="$dir" FM_SESSION_SOURCE="$source" "$FAKE_CURSOR" -c '
+  cd "$dir" && printf '%s' "$payload" | FM_HOME="$dir" FM_SESSION_SOURCE="$source" "$FAKE_CURSOR" -c '
     printf "%s\n" "$$" > "$FM_HOME/state/.lock"
     "$FM_HOME/bin/fm-sessionstart-cursor.sh" --source "$FM_SESSION_SOURCE"
   ' 2>/dev/null
-}
+)
 
 followup_of() {  # <json>
   printf '%s' "$1" | jq -r '.followup_message // empty' 2>/dev/null
@@ -206,10 +207,10 @@ test_autoarm_stands_down_on_cursor_payload() {
   dir=$(make_primary_dir "$TMP_ROOT/host-autoarm")
   : > "$dir/state/task1.meta"
   write_arm_fixture "$dir" actionable
-  printf '%s' "$CURSOR_PAYLOAD" | FM_HOME="$dir" "$FAKE_CURSOR" -c '
+  ( cd "$dir" && printf '%s' "$CURSOR_PAYLOAD" | FM_HOME="$dir" "$FAKE_CURSOR" -c '
       printf "%s\n" "$$" > "$FM_HOME/state/.lock"
       exec "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
-    ' >/dev/null 2>&1
+    ' >/dev/null 2>&1 )
   status=$?
   expect_code 0 "$status" "the Claude auto-arm must stay inert under Cursor"
   [ ! -e "$dir/state/arm-ran" ] || fail "the Claude auto-arm armed under a Cursor payload; on Cursor it would run synchronously and hold the turn open for its multi-hour timeout"
@@ -225,10 +226,10 @@ printf '%s\n' "$$" >> "$FM_HOME/state/digest-ran"
 printf 'DIGEST BODY\n'
 SH
   chmod +x "$dir/bin/fm-session-start.sh"
-  out=$(printf '%s' "$CURSOR_PAYLOAD" | FM_HOME="$dir" bash "$dir/bin/fm-sessionstart-run.sh" 2>&1)
+  out=$(cd "$dir" && printf '%s' "$CURSOR_PAYLOAD" | FM_HOME="$dir" bash "$dir/bin/fm-sessionstart-run.sh" 2>&1)
   [ -z "$out" ] || fail "the run wrapper emitted a digest for the Cursor duplicate: $out"
   [ ! -e "$dir/state/digest-ran" ] || fail "the run wrapper took the helm twice under Cursor"
-  out=$(printf '{"source":"startup","session_id":"s"}' | FM_HOME="$dir" bash "$dir/bin/fm-sessionstart-run.sh" 2>&1)
+  out=$(cd "$dir" && printf '{"source":"startup","session_id":"s"}' | FM_HOME="$dir" bash "$dir/bin/fm-sessionstart-run.sh" 2>&1)
   case "$out" in *'DIGEST BODY'*) ;; *) fail "a Claude-shaped payload must still run the digest, got: $out" ;; esac
   pass "fm-sessionstart-run: inert on a Cursor payload, unchanged otherwise"
 }
@@ -254,10 +255,10 @@ test_cd_guard_renders_cursor_deny() {
   local dir payload out decision
   dir=$(make_primary_dir "$TMP_ROOT/host-cd")
   payload='{"tool_name":"Shell","tool_input":{"command":"cd projects/example"},"cursor_version":"2026.08.11-e8db854"}'
-  out=$(printf '%s' "$payload" | FM_HOME="$dir" bash "$dir/bin/fm-cd-pretool-check.sh" --cursor 2>/dev/null)
+  out=$(cd "$dir" && printf '%s' "$payload" | FM_HOME="$dir" bash "$dir/bin/fm-cd-pretool-check.sh" --cursor 2>/dev/null)
   decision=$(printf '%s' "$out" | jq -r '.permission // empty' 2>/dev/null)
   [ "$decision" = deny ] || fail "expected a Cursor deny object from the cd guard, got: $out"
-  out=$(printf '%s' "$payload" | FM_HOME="$dir" bash "$dir/bin/fm-cd-pretool-check.sh" 2>&1)
+  out=$(cd "$dir" && printf '%s' "$payload" | FM_HOME="$dir" bash "$dir/bin/fm-cd-pretool-check.sh" 2>&1)
   [ -z "$out" ] || fail "the cd guard's Claude-settings duplicate produced output under Cursor: $out"
   pass "fm-cd-pretool-check: Cursor duplicate allows, --cursor denies in Cursor's own shape"
 }
@@ -507,7 +508,7 @@ test_park_inert_without_session_lock() {
   dir=$(make_primary_dir "$TMP_ROOT/park-nolock")
   : > "$dir/state/task1.meta"
   write_arm_fixture "$dir" actionable
-  out=$(printf '%s' "$CURSOR_PAYLOAD" | FM_HOME="$dir" bash "$dir/bin/fm-turnend-guard-cursor.sh" 2>/dev/null)
+  out=$(cd "$dir" && printf '%s' "$CURSOR_PAYLOAD" | FM_HOME="$dir" bash "$dir/bin/fm-turnend-guard-cursor.sh" 2>/dev/null)
   [ -z "$out" ] || fail "a session that does not hold the home lock must not arm or wake: $out"
   [ ! -e "$dir/state/arm-ran" ] || fail "the park armed without owning the session lock"
   pass "cursor park: inert when this session does not hold the home lock"
@@ -556,9 +557,9 @@ test_park_ignores_malformed_payload() {
   dir=$(make_primary_dir "$TMP_ROOT/park-malformed")
   : > "$dir/state/task1.meta"
   write_arm_fixture "$dir" actionable
-  out=$(printf 'not json at all' | FM_HOME="$dir" bash "$dir/bin/fm-turnend-guard-cursor.sh" 2>/dev/null)
+  out=$(cd "$dir" && printf 'not json at all' | FM_HOME="$dir" bash "$dir/bin/fm-turnend-guard-cursor.sh" 2>/dev/null)
   [ -z "$out" ] || fail "a malformed payload must fail open, got: $out"
-  out=$(printf '{"loop_count":"three","cursor_version":"x"}' | FM_HOME="$dir" bash "$dir/bin/fm-turnend-guard-cursor.sh" 2>/dev/null)
+  out=$(cd "$dir" && printf '{"loop_count":"three","cursor_version":"x"}' | FM_HOME="$dir" bash "$dir/bin/fm-turnend-guard-cursor.sh" 2>/dev/null)
   [ -z "$out" ] || fail "a non-numeric loop_count must fail open, got: $out"
   pass "cursor park: malformed payloads fail open without arming"
 }
@@ -596,7 +597,7 @@ test_sessionstart_silent_in_child_worktree() {
   : > "$child/AGENTS.md"
   install_scripts "$child"
   install_digest_fixture "$child"
-  out=$(printf '{"hook_event_name":"sessionStart","cursor_version":"x"}' \
+  out=$(cd "$child" && printf '{"hook_event_name":"sessionStart","cursor_version":"x"}' \
     | FM_HOME="$child" bash "$child/bin/fm-sessionstart-cursor.sh" --source startup 2>/dev/null)
   [ -z "$out" ] || fail "a child worktree must never take the helm: $out"
   pass "fm-sessionstart-cursor: silent inside a child crewmate worktree"

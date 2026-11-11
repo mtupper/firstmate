@@ -624,6 +624,10 @@ FM_LOG_MAX_BYTES=1048576           # daemon log size that triggers trimming
 FM_LOG_KEEP_LINES=2000             # daemon log lines kept when trimming
 ```
 
+Operator tuning knobs above pass into every agent firstmate launches and every multiplexer server it starts.
+The variables that name which home, state directory, session, or supervisor pane a process acts for - such as `FM_HOME`, the `*_OVERRIDE` paths, `FM_SUPERVISOR_TARGET`, and internal one-hop handoffs - never do: every agent launch clears them through `bin/fm-agent-env.sh` before applying its own, and every server start clears them along with harness session markers.
+`bin/fm-env-scrub-lib.sh` owns the exact names.
+
 `fm-teardown.sh` retries only Git's `Unable to create '...index.lock': File exists` return failure up to `FM_TREEHOUSE_RETURN_LOCK_RETRIES` times.
 `FM_TREEHOUSE_RETURN_LOCK_RETRIES` accepts a nonnegative integer, and an unset, blank, or invalid value uses the default of 3.
 `FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS` accepts nonnegative whole or fractional seconds between attempts.

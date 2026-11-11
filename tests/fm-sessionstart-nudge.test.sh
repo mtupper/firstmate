@@ -341,7 +341,7 @@ exit 0
 SH
   chmod +x "$fixture/bin/"*.sh
 
-  out=$(EXT="$fixture/.pi/extensions/fm-primary-turnend-guard.ts" \
+  out=$(cd "$fixture" && EXT="$fixture/.pi/extensions/fm-primary-turnend-guard.ts" \
     FM_HOME="$fixture" FM_ROOT_OVERRIDE="$fixture" \
     node --input-type=module 2>&1 <<'JS'
 import { pathToFileURL } from "node:url";
@@ -433,7 +433,8 @@ printf '\nPI_LARGE_DIGEST_SUFFIX\n'
 SH
   chmod +x "$fixture/bin/"*.sh
 
-  out=$(EXT="$fixture/.pi/extensions/fm-primary-turnend-guard.ts" \
+  # The Pi extension runs in the session's own project directory.
+  out=$(cd "$fixture" && EXT="$fixture/.pi/extensions/fm-primary-turnend-guard.ts" \
     FM_HOME="$fixture" FM_ROOT_OVERRIDE="$fixture" FM_GATE_REFUSE_BYPASS=1 \
     node --input-type=module 2>&1 <<'JS'
 import { pathToFileURL } from "node:url";

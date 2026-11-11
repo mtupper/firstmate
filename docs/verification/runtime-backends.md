@@ -237,7 +237,7 @@ The CLI matrix was checked directly:
 | Keys | `herdr pane send-keys <pane> enter|escape|ctrl+c --session <name>` | Enter and Escape worked; Ctrl-C interrupted foreground work. |
 | Capture | `herdr pane read <pane> --source recent --lines N` | Small N could return empty below viewport height; a 200-line request plus local trim was stable. |
 | Native state | `herdr agent get <pane>` | Working and done transitions were visible; native `busy` remains positive activity evidence, while native `idle` cannot close a turn and the adapter's semantic lifecycle decides worker state. |
-| Restart | guarded named-session stop then start | Workspace, tab, pane, and labels persisted; the agent process and registration did not. |
+| Restart | guarded named-session stop then start | Workspace, tab, pane, and labels persisted; the agent process and registration did not, and from Herdr 0.8 an agent with an integration session reference is resumed into a fresh shell ([Restore identity](#restore-identity-and-agent-resume)). |
 | Close | `herdr pane close <pane> --session <name>` | The exact one-pane task tab closed; closing a final tab could remove the workspace. |
 
 All destructive verification used `bin/fm-herdr-lab.sh` with a non-default `fm-lab-` name and a byte-identical default-session tripwire.
@@ -575,6 +575,32 @@ ok - real herdr: an agent that does not stop fails closed instead of being repor
 
 The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies, so registering and not registering an agent on a plain shell pane exercises exactly the gate every lifecycle verb depends on, with no real agent launched.
 That command is the guard that refreshes this record; run it after every Herdr upgrade rather than trusting the version above.
+
+### Restore identity and agent resume
+
+Verified 2026-11-11 on Herdr 0.8.2 protocol 20 with Claude Code 2.1.311 on macOS aarch64.
+A guarded named-lab stop and start restores each pane as a fresh login shell, a child of the server, in the pane's recorded creation directory, and with Herdr's default `resume_agents_on_restore = true` types the agent's resume command into it; the resumed `claude --resume <id>` is a child of that shell and inherits exactly its environment and directory.
+A Claude agent started with an inherited `CLAUDE_CODE_CHILD_SESSION` prints `Transcript saving is off - inherited CLAUDE_CODE_CHILD_SESSION marker`, saves no transcript, and its restore fails with `No conversation found with session ID: <id>`.
+Claude Code also uses an inherited `CLAUDE_PROJECT_DIR` for hook commands, so it must never cross a launch.
+
+```sh
+tests/fm-herdr-restore-identity-e2e.test.sh
+FM_HERDR_RESTORE_LIVE_E2E=1 tests/fm-herdr-restore-identity-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - real named lab: fresh agents launched under a polluted server carry only their own identity
+ok - real named lab: a server started from a firstmate session carries none of its identity
+ok - real named lab: a restored crewmate comes back in its worktree, a secondmate in its home
+ok - real named lab: restored shells, where a resumed agent starts, carry no other session identity
+evidence: herdr=0.8.2 protocol=20 default-session-tripwire=armed
+ok - live: Herdr resumed both Claude agents (herdr 0.8.2, claude 2.1.311 (Claude Code))
+ok - live: resumed agents run in their own worktree or home with no other session identity
+```
+
+The live guard is the command that refreshes this record; run it after every Herdr or Claude Code upgrade.
 
 ### Away-mode transport
 

@@ -69,6 +69,17 @@ done
 # agent and an unmarked task worktree can never run a session start for a home
 # they do not own.
 fm_is_gate_agent "$FM_ROOT" && exit 0
+# A session whose inherited environment names another firstmate home than the
+# one it runs in must not take that home's helm. Say so in the session's own
+# context, because hook stdout is what the agent reads first.
+if ! fm_home_identity_check "$FM_HOME" "$STATE"; then
+  printf '●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+  printf '●  WRONG FIRSTMATE ENVIRONMENT - THIS SESSION MUST NOT ACT\n'
+  printf '●  %s\n' "$FM_HOME_IDENTITY_REASON"
+  printf '●  Run no firstmate command from this session; firstmate scripts refuse it.\n'
+  printf '●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+  exit 0
+fi
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
 session_start_completed() {
