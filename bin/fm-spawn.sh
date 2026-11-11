@@ -29,9 +29,10 @@
 #   model, and effort may change, which is what makes a harness switch one
 #   ordinary relaunch. It refuses unless the recorded endpoint is positively
 #   agent-free on a backend with a recovery-grade agent-state classifier (tmux
-#   or herdr), refuses unless the endpoint's shell is sitting in the recorded
-#   worktree, and clears the previous harness's per-task wiring before arming
-#   the new incarnation.
+#   or herdr), moves that agent-free shell into the recorded worktree when it
+#   sits elsewhere (a multiplexer-restored pane), refuses unless the shell then
+#   reports the recorded worktree, and clears the previous harness's per-task
+#   wiring before arming the new incarnation.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -48,8 +49,14 @@
 #   then tmux.
 #   Spawn-capable backends are the reference tmux adapter and experimental
 #   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
-#   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
-#   session provider only, exactly like herdr/zellij, so it does. An
+#   terminal, so ship/scout Orca spawns do not use treehouse; cmux is a
+#   session provider only, exactly like herdr/zellij, so it does. A ship or
+#   scout spawn durably leases its treehouse worktree (`treehouse get --lease`)
+#   before creating its endpoint and creates the endpoint inside it, so the
+#   endpoint's own shell - the directory a multiplexer restores a pane into -
+#   is the worktree; teardown returns the lease and an aborted spawn returns a
+#   clean one. Every agent launch starts with bin/fm-agent-env.sh, which clears
+#   inherited firstmate identity and harness-session variables first. An
 #   auto-detected herdr or cmux spawn prints a loud stderr notice;
 #   auto-detected tmux stays silent; zellij and orca are never auto-detected.
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
@@ -649,6 +656,7 @@ ORCA_ABORT_CLEANUP=0
 ORCA_WORKTREE_ID=
 ORCA_TERMINAL=
 HERDR_PROJECTION_ABORT_CLEANUP=0
+TREEHOUSE_LEASE_ABORT_CLEANUP=0
 HERDR_PROJECTION_ABORT_SESSION=
 HERDR_PROJECTION_ABORT_TASK_PANE=
 HERDR_PROJECTION_ABORT_SEEDED_PANE=
@@ -687,6 +695,27 @@ parse_orca_worktree_result() {
     ORCA_TERMINAL=${rest#*$'\t'}
   else
     ORCA_TERMINAL=
+  fi
+}
+
+# A fresh ship or scout task durably leases its pooled worktree before its
+# endpoint exists (spawn_lease_worktree below), so an aborted spawn must give the
+# lease back. Only a clean worktree is returned: `treehouse return --force`
+# cleans and resets, and also ends any shell still sitting in the worktree, which
+# closes an endpoint this spawn created there. A worktree with changes is left
+# leased and named, never discarded.
+spawn_release_aborted_lease() {
+  local status_out
+  [ -n "${WT:-}" ] && [ -d "$WT" ] || return 0
+  [ "$(fm_canonical_path "$WT")" != "$(fm_canonical_path "$PROJ_ABS")" ] || return 0
+  if ! status_out=$(git -C "$WT" status --porcelain 2>/dev/null) || [ -n "$status_out" ]; then
+    echo "warning: spawn of $ID aborted; leased worktree $WT has changes or cannot be inspected, so it stays leased (release it with: cd $(shell_quote "$PROJ_ABS") && treehouse return $(shell_quote "$WT"))" >&2
+    return 0
+  fi
+  if ( cd "$PROJ_ABS" && treehouse return --force "$WT" ) >/dev/null 2>&1; then
+    echo "note: spawn of $ID aborted; released its leased worktree $WT" >&2
+  else
+    echo "warning: spawn of $ID aborted and its leased worktree $WT could not be returned (release it with: cd $(shell_quote "$PROJ_ABS") && treehouse return $(shell_quote "$WT"))" >&2
   fi
 }
 
@@ -733,6 +762,10 @@ spawn_abort_cleanup() {
   if [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" = 1 ]; then
     HERDR_PRESENTATION_ORDER_LOCK_HELD=0
     fm_lock_release "$HERDR_PRESENTATION_ORDER_LOCK" || true
+  fi
+  if [ "$TREEHOUSE_LEASE_ABORT_CLEANUP" = 1 ]; then
+    TREEHOUSE_LEASE_ABORT_CLEANUP=0
+    spawn_release_aborted_lease
   fi
   if [ "$ORCA_ABORT_CLEANUP" = 1 ]; then
     ORCA_ABORT_CLEANUP=0
@@ -1144,11 +1177,12 @@ launch_template() {
     # SECOND worktree under ~/.cursor/worktrees and would break firstmate's
     # isolation contract. The binary is resolved rather than named because
     # `cursor` is not the CLI (the installed names are cursor-agent and the
-    # legacy alias agent), and the foreign primary markers are cleared so an
-    # inherited CLAUDECODE cannot outrank cursor's own marker in a process that
-    # only reads the environment. Cursor exposes no effort flag, so the shared
-    # effort axis is deliberately omitted and stays in task metadata only.
-    cursor) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u CURSOR_INVOKED_AS __CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # legacy alias agent). bin/fm-agent-env.sh clears the foreign primary
+    # markers at every launch, so an inherited CLAUDECODE cannot outrank
+    # cursor's own marker in a process that only reads the environment. Cursor
+    # exposes no effort flag, so the shared effort axis is deliberately omitted
+    # and stays in task metadata only.
+    cursor) printf '%s' '__CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # Kimi Code rejects a positional prompt, so it launches bare and receives
     # only an absolute brief pointer after the TUI readiness gate below.
     # Its turn-end signal is a globally configured Stop hook plus a guarded
@@ -1174,8 +1208,10 @@ launch_template() {
     # plugin engine is off in the default build, so firstmate folds muse's own
     # session event log instead (bin/fm-busy-lib.sh), bound by the sidecar
     # written below. Nothing to place in the template for it.
-    # codex, opencode, and kimi are also markerless and share this inherited-marker hazard; changing their verified launch boundaries belongs in follow-up work.
-    muse) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS XDG_CONFIG_HOME=__MUSECONFIG__ XDG_DATA_HOME=__MUSEDATA__ MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on __MUSEBIN__ --yolo __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # muse, codex, opencode, and kimi are markerless, so an inherited foreign
+    # marker would misidentify them; bin/fm-agent-env.sh clears those markers at
+    # every launch.
+    muse) printf '%s' 'XDG_CONFIG_HOME=__MUSECONFIG__ XDG_DATA_HOME=__MUSEDATA__ MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on __MUSEBIN__ --yolo __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
@@ -1723,6 +1759,32 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
 }
 
+# Durably lease this task's pooled worktree from the project's treehouse pool
+# (`treehouse get --lease`, which prints only the path) and arm the abort
+# release. The lease is held by the task until teardown returns it.
+spawn_lease_worktree() {
+  local out err_file
+  err_file=$(mktemp "${TMPDIR:-/tmp}/fm-spawn-lease.XXXXXX") || {
+    echo "error: could not create a temporary file to lease a worktree for $ID" >&2
+    exit 1
+  }
+  if ! out=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$W" 2>"$err_file"); then
+    echo "error: treehouse could not lease a worktree for $ID from $PROJ_ABS: $(tail -n 3 "$err_file" 2>/dev/null)" >&2
+    rm -f "$err_file"
+    exit 1
+  fi
+  rm -f "$err_file"
+  WT=$(printf '%s\n' "$out" | sed -n '/[^[:space:]]/{p;q;}')
+  [ -n "$WT" ] || {
+    echo "error: treehouse get --lease reported no worktree for $ID; refusing to launch" >&2
+    exit 1
+  }
+  # Validate before arming the release: a path that is not a distinct linked
+  # worktree, such as the primary clone itself, must never be cleaned and reset.
+  validate_spawn_worktree "treehouse get --lease" "worktree $WT"
+  TREEHOUSE_LEASE_ABORT_CLEANUP=1
+}
+
 freshen_spawn_worktree_base() {  # <worktree>
   local worktree=$1 default target expected actual status
   if ! git -C "$worktree" fetch --quiet origin; then
@@ -1854,17 +1916,30 @@ if [ "$RELAUNCH" -eq 1 ]; then
   WT_TARGET=$T
   SES=${T%%:*}
 else
+# A fresh ship or scout task leases its pooled worktree BEFORE its endpoint
+# exists and creates the endpoint inside it. The endpoint's own shell, not a
+# subshell, then lives in the worktree, which is the directory a multiplexer
+# records for the pane and restores it into after a restart or reboot; a pane
+# created in the project instead came back in the primary clone. The durable
+# lease also keeps treehouse from handing the worktree to another task while no
+# process runs in it, such as after a reboot. Orca owns its own worktree, and a
+# secondmate's endpoint is its home.
+ENDPOINT_CWD=$PROJ_ABS
+if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  spawn_lease_worktree
+  ENDPOINT_CWD=$WT
+fi
 case "$BACKEND" in
   tmux)
     SES=$(fm_backend_tmux_container_ensure)
     T="$SES:$W"
     # #134 robustness (tmux): fm_backend_tmux_create_task captures a stable window
     # id and pins the window name (automatic-rename/allow-rename off) so a captain's
-    # non-default tmux config cannot rename the window away from fm-<id> once
-    # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
-    # rename-critical worktree-detection steps below; the persisted window= handle
+    # non-default tmux config cannot rename the window away from fm-<id> as its
+    # shell starts in the worktree. WT_TARGET carries that stable id for the
+    # rename-critical worktree proof below; the persisted window= handle
     # stays $T (the name form), which is safe now that rename is disabled.
-    WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
+    WID=$(fm_backend_tmux_create_task "$SES" "$W" "$ENDPOINT_CWD") || exit 1
     WT_TARGET="$WID"
     ;;
   herdr)
@@ -1916,7 +1991,7 @@ case "$BACKEND" in
           FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_reclaim_task \
             "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" "$HERDR_LABEL_HOME" \
             "$HERDR_RECOVERY_WORKSPACE_ID" "$HERDR_RECOVERY_TAB_ID" "$HERDR_RECOVERY_PANE_ID" \
-            "$HERDR_PARENT_LABEL" "$W" "$PROJ_ABS"
+            "$HERDR_PARENT_LABEL" "$W" "$ENDPOINT_CWD"
           HERDR_RECLAIM_STATUS=$?
           set -e
           case "$HERDR_RECLAIM_STATUS" in
@@ -1970,7 +2045,7 @@ case "$BACKEND" in
             HERDR_PROJECTION_ID=$(fm_backend_herdr_projection_journal_create "$STATE" "$ID") || exit 1
             HERDR_PROJECTION_LABEL=$(fm_backend_herdr_projection_workspace_label "$ID" "$HERDR_PROJECTION_ID")
             if ! FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_create_task \
-              "$PROJ_ABS" "$HERDR_PROJECTION_LABEL" "$W"; then
+              "$ENDPOINT_CWD" "$HERDR_PROJECTION_LABEL" "$W" "$PROJ_ABS"; then
               if [ "${FM_BACKEND_HERDR_PROJECTION_CLEANUP_SAFE:-0}" = 1 ]; then
                 HERDR_PROJECTION_ABORT_CLEANUP=1
                 HERDR_PROJECTION_ABORT_SESSION=$FM_BACKEND_HERDR_PROJECTION_SESSION
@@ -2023,7 +2098,7 @@ case "$BACKEND" in
       HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
       HERDR_SES=${CONTAINER%%:*}
       HERDR_WORKSPACE_ID=${CONTAINER#*:}
-      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
+      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$ENDPOINT_CWD" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
       read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
 $HERDR_TASK_IDS
 EOF
@@ -2036,7 +2111,7 @@ EOF
     ;;
   zellij)
     ZELLIJ_SES=$(fm_backend_zellij_container_ensure) || exit 1
-    ZELLIJ_TASK_IDS=$(fm_backend_zellij_create_task "$ZELLIJ_SES" "$W" "$PROJ_ABS") || exit 1
+    ZELLIJ_TASK_IDS=$(fm_backend_zellij_create_task "$ZELLIJ_SES" "$W" "$ENDPOINT_CWD") || exit 1
     read -r ZELLIJ_TAB_ID ZELLIJ_PANE_ID <<EOF
 $ZELLIJ_TASK_IDS
 EOF
@@ -2048,7 +2123,7 @@ EOF
     ;;
   cmux)
     fm_backend_cmux_container_ensure || exit 1
-    CMUX_TASK_IDS=$(fm_backend_cmux_create_task "$W" "$PROJ_ABS") || exit 1
+    CMUX_TASK_IDS=$(fm_backend_cmux_create_task "$W" "$ENDPOINT_CWD") || exit 1
     read -r CMUX_WORKSPACE_ID CMUX_SURFACE_ID <<EOF
 $CMUX_TASK_IDS
 EOF
@@ -2093,8 +2168,8 @@ fi
 # #134 robustness: only tmux needs a worktree-detection target distinct from $T -
 # its rename-safe stable window id, set as WT_TARGET=$WID in the tmux branch above.
 # Every other backend addresses its pane/surface by the id already in $T, so default
-# WT_TARGET to $T for them (and for any future backend) - the shared treehouse-get +
-# worktree-detection steps below must never reference an unbound WT_TARGET under set -u.
+# WT_TARGET to $T for them (and for any future backend) - the shared endpoint
+# worktree proof below must never reference an unbound WT_TARGET under set -u.
 : "${WT_TARGET:=$T}"
 spawn_send_text_line() {  # <target> <text>
   case "$BACKEND" in
@@ -2194,9 +2269,16 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # No worktree is acquired: the recorded one is reused as-is. What must be
   # proven instead is that the adopted endpoint's shell is actually sitting in
   # that worktree, so the replacement agent starts where the work is rather
-  # than wherever the pane happened to drift.
+  # than wherever the pane happened to drift. A multiplexer that restores a
+  # pane (a Herdr restart after a reboot) starts its new shell in the pane's
+  # original directory, which for a task created before worktree leasing is
+  # the primary clone. The endpoint was just proven agent-free, so its shell
+  # is moved into the recorded worktree once before the proof.
   relaunch_wt_real=$(fm_canonical_path "$WT")
-  relaunch_seen=
+  relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
+  if [ -n "$relaunch_seen" ] && [ "$(fm_canonical_path "$relaunch_seen")" != "$relaunch_wt_real" ]; then
+    spawn_send_text_line "$WT_TARGET" "cd -- $(shell_quote "$WT")" || true
+  fi
   for _ in $(seq 1 10); do
     relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
     [ -z "$relaunch_seen" ] || [ "$(fm_canonical_path "$relaunch_seen")" != "$relaunch_wt_real" ] || break
@@ -2208,53 +2290,24 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
-
-  # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
-  # Target the stable window id, not the name: if the name is ever lost (e.g. an
-  # automatic-rename slips through), display-message -t <bad-name> falls back to the
-  # active client's window, which would misread firstmate's OWN pane path as the
-  # worktree and tangle a hook into the primary checkout. The window id never lies.
-  # Compare against PROJ_ABS_REAL (physical), not PROJ_ABS: a symlinked project
-  # prefix would otherwise make the pane's OS-level cwd read differ from
-  # PROJ_ABS on the very first poll, before the pane has actually moved.
-  #
-  # A single read that already differs from PROJ_ABS_REAL is not proof the pane
-  # settled there: on some tmux/WSL setups a brand-new window's pane_current_path
-  # transiently reports an unrelated stale path (seen live as another real git
-  # checkout entirely) before the shell catches up with treehouse get's cd. That
-  # stale path still passes the PROJ_ABS_REAL comparison and validate_spawn_worktree
-  # below (it resolves to a real, distinct worktree top-level too), so accepting it
-  # on one read alone silently records the wrong worktree= in state/<id>.meta. Require
-  # two consecutive reads to agree on the same non-project path before accepting it;
-  # a mismatch just becomes the new candidate rather than resetting the wait, so a
-  # pane that is already settled by the first real read only costs the one existing
-  # inter-poll sleep as confirmation, not a whole extra cycle on top.
-  candidate=""
-  for _ in $(seq 1 60); do
-    p=$(spawn_current_path "$WT_TARGET" || true)
-    if [ -n "$p" ]; then
-      p_real=$(fm_canonical_path "$p")
-      if [ "$p_real" != "$PROJ_ABS_REAL" ]; then
-        if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
-          WT="$p"
-          break
-        fi
-        candidate="$p_real"
-      else
-        candidate=""
-      fi
-    else
-      candidate=""
-    fi
-    sleep 1
+  # The endpoint was created inside its leased worktree. Prove its shell is
+  # actually there before anything is typed into it: target the stable window id,
+  # not the name, so a renamed tmux window can never make this read firstmate's
+  # own pane, and compare physical paths so a symlinked prefix cannot misfire.
+  # A brand-new window can transiently report an unrelated stale path before its
+  # shell settles; the expected worktree is known, so the poll simply waits for
+  # it rather than accepting the first path that differs from the project.
+  spawn_wt_real=$(fm_canonical_path "$WT")
+  spawn_seen=
+  for _ in $(seq 1 "${FM_SPAWN_WORKTREE_POLLS:-60}"); do
+    spawn_seen=$(spawn_current_path "$WT_TARGET" || true)
+    [ -z "$spawn_seen" ] || [ "$(fm_canonical_path "$spawn_seen")" != "$spawn_wt_real" ] || break
+    sleep 0.5
   done
-  if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
+  if [ -z "$spawn_seen" ] || [ "$(fm_canonical_path "$spawn_seen")" != "$spawn_wt_real" ]; then
+    echo "error: task $ID's new endpoint is in '${spawn_seen:-unknown}', not its leased worktree '$WT'; refusing to launch outside the task's isolated copy. Inspect target $T" >&2
     exit 1
   fi
-
-  validate_spawn_worktree "treehouse get" "$T"
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
@@ -2683,6 +2736,8 @@ preserve_relaunch_meta() {
     echo "control_relaunch_tx=$FM_CONTROL_RELAUNCH_TX"
   fi
 } > "$SPAWN_META_PATH"
+# The published record names the leased worktree, so teardown now owns it.
+TREEHOUSE_LEASE_ABORT_CLEANUP=0
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_PUBLISH_STARTED=1
   mv -f "$SPAWN_META_TMP" "$STATE/$ID.meta"
@@ -2723,15 +2778,9 @@ case "$HARNESS" in
   cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
-case "$HARNESS" in
-  claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
-    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS $LAUNCH"
-    ;;
-esac
-# Crewmate panes are created by a long-lived tmux/herdr daemon that does not
-# inherit firstmate's current environment, so a bare `claude` in the pane falls
-# back to the default ~/.claude store even when firstmate itself runs under a
-# different CLAUDE_CONFIG_DIR (for example a work-vs-personal subscription split).
+# A pane shell's environment belongs to the multiplexer server and the pane's
+# history, not to this task, so a bare `claude` there does not see firstmate's
+# own CLAUDE_CONFIG_DIR (for example a work-vs-personal subscription split).
 # Forward firstmate's own resolved store onto the claude launch so the crewmate
 # uses the same credential/config firstmate is authenticated with. Only when set;
 # an unset value is the single-store default and needs no prefix.
@@ -2755,8 +2804,14 @@ if [ "$KIND" = secondmate ]; then
   # not enable them across the launch boundary (bin/fm-trace-context-lib.sh header).
   # Reuse the single frozen decision from the carrier resolution above so the
   # injected carrier and this on/off snapshot are guaranteed to agree.
-  LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE FM_SUPERVISION_MODEL=$supervision_model $LAUNCH"
+  LAUNCH="FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE FM_SUPERVISION_MODEL=$supervision_model $LAUNCH"
 fi
+# Every launch, fresh or relaunch and of every kind, starts with
+# bin/fm-agent-env.sh: it clears inherited firstmate home, session, and handoff
+# variables and harness session markers from the pane shell before the
+# assignments above apply, so the agent carries only the identity this launch
+# names.
+LAUNCH="$(shell_quote "$FM_ROOT/bin/fm-agent-env.sh") $LAUNCH"
 if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"
 fi

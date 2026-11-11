@@ -249,6 +249,29 @@ SH
   done
 }
 
+# fm_fake_treehouse <fakebin> [lease-path]: a fake treehouse for suites that
+# drive a fresh ship or scout spawn. bin/fm-spawn.sh leases the task worktree
+# with `treehouse get --lease` before it creates the endpoint, so the fake prints
+# FM_FAKE_TREEHOUSE_LEASE, falling back to the FM_FAKE_PANE_PATH the suite's fake
+# backend reports for the new endpoint, then to <lease-path>. Every call is
+# appended to FM_FAKE_TREEHOUSE_LOG when that is set; every other invocation
+# exits 0.
+fm_fake_treehouse() {
+  local default_lease=${2:-}
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'default_lease=%q\n' "$default_lease"
+    cat <<'SH'
+[ -z "${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TREEHOUSE_LOG"
+case "$*" in
+  "get --lease"*) printf '%s\n' "${FM_FAKE_TREEHOUSE_LEASE:-${FM_FAKE_PANE_PATH:-$default_lease}}" ;;
+esac
+exit 0
+SH
+  } > "$1/treehouse"
+  chmod +x "$1/treehouse"
+}
+
 # fm_fake_version_tool <fakebin> <tool> <override-env-var> <default-version>
 # The stub answers `--version` with <override-env-var> when that variable is set
 # and non-empty, and with <default-version> otherwise; every other invocation

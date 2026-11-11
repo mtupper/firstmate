@@ -14,6 +14,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
+# shellcheck source=bin/fm-primary-scope-lib.sh
+. "$SCRIPT_DIR/fm-primary-scope-lib.sh"
+
+# Presenting and acknowledging wakes advances this home's durable cursors, so an
+# inherited environment naming another home must never drain that home's queue.
+if ! fm_home_identity_check "$FM_HOME" "$STATE"; then
+  printf '%s\n' "$FM_HOME_IDENTITY_REASON" >&2
+  exit 3
+fi
 
 DRAIN_TMP=
 DRAIN_LOCK_HELD=false

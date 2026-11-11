@@ -123,6 +123,8 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # owner; this adapter contributes only capture and capability facts).
 # shellcheck source=bin/fm-composer-lib.sh
 . "$FM_BACKEND_ZELLIJ_ROOT/bin/fm-composer-lib.sh"
+# shellcheck source=bin/fm-env-scrub-lib.sh
+. "$FM_BACKEND_ZELLIJ_ROOT/bin/fm-env-scrub-lib.sh"
 
 # Verified minimum: report.md recommends "likely Zellij 0.44 or newer" for
 # returned pane/tab IDs and dump-screen --pane-id; empirically verified
@@ -233,10 +235,13 @@ fm_backend_zellij_session_exists() {  # <session>
 # against an EXISTING session prints "Session already exists" and exits 1 -
 # harmless here because existence is checked first and the launch is
 # backgrounded, its exit status never inspected.
+# Zellij gives the session's environment to every pane, including panes it
+# resurrects, so the session starts from $HOME with the daemon scope of
+# bin/fm-env-scrub-lib.sh cleared.
 fm_backend_zellij_server_ensure() {  # <session>
   local session=$1 i
   fm_backend_zellij_session_exists "$session" && return 0
-  ( nohup zellij attach -b "$session" </dev/null >/dev/null 2>&1 & ) || return 1
+  ( fm_env_scrub_daemon_exec nohup zellij attach -b "$session" </dev/null >/dev/null 2>&1 & ) || return 1
   for i in $(seq 1 20); do
     fm_backend_zellij_session_exists "$session" && return 0
     sleep 0.5

@@ -23,7 +23,14 @@
 # destructive call.
 # Provision records the running default session as a fleet-state tripwire and
 # teardown requires that record to be identical afterward.
+# Provision starts the lab server the way bin/backends/herdr.sh starts a
+# production server: from $HOME with the daemon scope of
+# bin/fm-env-scrub-lib.sh cleared, so a lab never inherits the caller's home,
+# agent session, or default-session pane identity.
 set -u
+
+# shellcheck source=bin/fm-env-scrub-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-env-scrub-lib.sh"
 
 fm_herdr_lab_error() {
   echo "fm-herdr-lab: $*" >&2
@@ -195,7 +202,7 @@ fm_herdr_lab_provision() { # <session>
   else
     fm_herdr_lab_prepare "$name" || return 1
   fi
-  fm_herdr_lab_raw "$name" server >/dev/null 2>&1 &
+  ( fm_env_scrub_daemon_exec HERDR_SESSION="$name" herdr server --session "$name" ) >/dev/null 2>&1 &
   server_pid=$!
   attempt=0
   max_attempts=300

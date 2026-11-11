@@ -39,6 +39,9 @@ Preserve its uncommitted changes and commits, keep the same task identity, and r
 Do not use a fresh generic spawn while the recorded worktree is unaccounted for, because allocating another worktree can split one task across two copies.
 If the worktree or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
 
+A multiplexer restore after a reboot can resume an agent that was created before worktree leasing in its primary clone, or one whose pane shows `WRONG FIRSTMATE ENVIRONMENT` because the restoring server carried another session's identity.
+Treat either as a live agent in the wrong place: stop it with `bin/fm-control.sh <task-id> exit`, then relaunch; relaunch moves the agent-free restored shell into the recorded worktree and launches with only the task's own identity ([`docs/herdr-backend.md`](../../../docs/herdr-backend.md) "Restart and liveness behavior").
+
 ## Live-endpoint escalation
 
 Escalate in order:

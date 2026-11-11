@@ -94,6 +94,13 @@ case "${1:-}" in
         'export TRACEPARENT='*)
           [ -z "${FM_FAKE_TRACE_EXPORTED:-}" ] || : > "$FM_FAKE_TRACE_EXPORTED"
           ;;
+        "cd -- '"*"'")
+          # A real shell moves; FM_FAKE_CD_IGNORED models one that does not.
+          if [ -z "${FM_FAKE_CD_IGNORED:-}" ]; then
+            target=${payload#cd -- \'}
+            printf '%s' "${target%\'}" > "$D/cwd"
+          fi
+          ;;
       esac
     fi
     exit 0 ;;
@@ -173,6 +180,7 @@ run_control() {  # <case-dir> <args...>
     FM_FAKE_TRACE_PREPARE="${FM_FAKE_TRACE_PREPARE:-}" \
     FM_FAKE_META_WRITER_READY="${FM_FAKE_META_WRITER_READY:-}" \
     FM_FAKE_TRACE_EXPORTED="${FM_FAKE_TRACE_EXPORTED:-}" \
+    FM_FAKE_CD_IGNORED="${FM_FAKE_CD_IGNORED:-}" \
     "$CONTROL" "$@" 2>&1
 }
 
@@ -273,6 +281,36 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   assert_grep "/exit" "$dir/fake/literal" "the previous agent should have been exited"
   assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
+}
+
+# Regression for 2026-11-11: a Herdr restore after a reboot left a crewmate's
+# pane shell in its PRIMARY clone, so relaunch refused and the crewmate could not
+# be recovered until someone moved the shell by hand.
+test_relaunch_moves_a_restored_shell_into_the_worktree() {
+  local dir out rc
+  dir=$(new_case restored-shell rs1)
+  add_ship_task "$dir" rs1 claude
+  printf 'zsh' > "$dir/fake/command"
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  out=$(run_control "$dir" rs1 relaunch --note "restored after reboot"); rc=$?
+  expect_code 0 "$rc" "relaunch of a restored shell outside its worktree should succeed"$'\n'"$out"
+  assert_grep "cd -- '$dir/wt'" "$dir/fake/keys" "relaunch must move the agent-free shell into the recorded worktree"
+  assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
+  assert_grep "fm-agent-env.sh" "$dir/fake/literal" "the replacement must launch behind the identity-clearing wrapper"
+  pass "fm-control relaunch: a restored shell outside its worktree is moved there before the launch"
+}
+
+test_relaunch_refuses_a_shell_that_does_not_reach_the_worktree() {
+  local dir out rc
+  dir=$(new_case unmoved-shell us1)
+  add_ship_task "$dir" us1 claude
+  printf 'zsh' > "$dir/fake/command"
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  out=$(FM_FAKE_CD_IGNORED=1 run_control "$dir" us1 relaunch --note "restored after reboot"); rc=$?
+  [ "$rc" -ne 0 ] || fail "relaunch must refuse a shell that never reaches the worktree"$'\n'"$out"
+  assert_contains "$out" "not its recorded worktree" "the refusal must name the recorded worktree"
+  assert_no_grep "encode launch-brief" "$dir/fake/literal" "no replacement may launch outside the worktree"
+  pass "fm-control relaunch: a shell that cannot reach the recorded worktree still refuses"
 }
 
 test_relaunch_preserves_durable_task_metadata() {
@@ -915,10 +953,11 @@ test_launch_failure_keeps_the_prior_record_and_reports_it() {
   dir=$(new_case rollback rl13)
   add_ship_task "$dir" rl13 claude
   before=$(cat "$dir/home/state/rl13.meta")
-  # The endpoint's shell is not in the recorded worktree, so the launch owner
-  # refuses AFTER the previous agent has already been stopped.
+  # The endpoint's shell is not in the recorded worktree and cannot be moved
+  # there, so the launch owner refuses AFTER the previous agent has already
+  # been stopped.
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
-  out=$(run_control "$dir" rl13 relaunch --harness codex --note "carry this forward"); rc=$?
+  out=$(FM_FAKE_CD_IGNORED=1 run_control "$dir" rl13 relaunch --harness codex --note "carry this forward"); rc=$?
   expect_code 1 "$rc" "a failed launch should fail closed"$'\n'"$out"
   assert_contains "$out" "no agent is running" "the failure should say no agent is running"
   assert_contains "$out" "$dir/wt" "the failure should say where the work is preserved"
@@ -938,7 +977,7 @@ test_prepublication_failure_keeps_concurrent_durable_metadata() {
   dir=$(new_case rollback-race rl30)
   add_ship_task "$dir" rl30 claude
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
-  FM_FAKE_CWD_RACE_READY="$dir/cwd-race-ready" \
+  FM_FAKE_CD_IGNORED=1 FM_FAKE_CWD_RACE_READY="$dir/cwd-race-ready" \
     run_control "$dir" rl30 relaunch --harness codex --note "preserve concurrent metadata" \
       > "$dir/control.out" &
   control_pid=$!
@@ -1308,13 +1347,15 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
   add_ship_task "$dir" rl18 claude
   printf 'zsh' > "$dir/fake/command"
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
-  out=$(run_spawn "$dir" rl18 --relaunch --harness claude); rc=$?
-  expect_code 1 "$rc" "a pane outside the worktree should refuse"
+  out=$(FM_FAKE_CD_IGNORED=1 run_spawn "$dir" rl18 --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "a pane that cannot reach the worktree should refuse"
   assert_contains "$out" "not its recorded worktree" "the refusal should name the wrong location"
   pass "fm-spawn --relaunch: refuses to start a replacement outside the copy holding the work"
 }
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
+test_relaunch_moves_a_restored_shell_into_the_worktree
+test_relaunch_refuses_a_shell_that_does_not_reach_the_worktree
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
