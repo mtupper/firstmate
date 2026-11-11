@@ -76,7 +76,8 @@ if ! fm_home_identity_check "$FM_HOME" "$STATE"; then
   printf '●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
   printf '●  WRONG FIRSTMATE ENVIRONMENT - THIS SESSION MUST NOT ACT\n'
   printf '●  %s\n' "$FM_HOME_IDENTITY_REASON"
-  printf '●  Run no firstmate command from this session; firstmate scripts refuse it.\n'
+  printf '●  Run no firstmate command from this session; the session lock, wake drain,\n'
+  printf '●  watcher arming, and every scoped hook refuse it.\n'
   printf '●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
   exit 0
 fi

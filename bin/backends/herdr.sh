@@ -2058,6 +2058,10 @@ EOF
 # fm_backend_herdr_projection_create_task: create one disposable presentation
 # workspace and its normal fm-<id> task tab without looking up, adopting, or
 # reusing any existing workspace.
+# The task tab starts in <cwd>. The workspace's seeded tab starts in <seed-cwd>
+# (default <cwd>): a spawn passes its project there, so a seeded tab that the
+# prune refuses to close because it is the captain's active tab never sits in
+# the task's leased worktree, whose abort release ends every shell inside it.
 # The caller must atomically publish the projection journal first.
 # This function sets exact response-derived globals and prints nothing:
 #   FM_BACKEND_HERDR_PROJECTION_SESSION
@@ -2070,8 +2074,8 @@ EOF
 # CLEANUP_SAFE becomes 1 only after both creates returned complete exact IDs.
 # A missing, failed, or malformed create response stays ambiguous and grants no
 # cleanup authority.
-fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-label>
-  local cwd=$1 workspace_label=$2 task_label=$3 session out tabs panes tab_count pane_count focus_before
+fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-label> [<seed-cwd>]
+  local cwd=$1 workspace_label=$2 task_label=$3 seed_cwd=${4:-$1} session out tabs panes tab_count pane_count focus_before
   FM_BACKEND_HERDR_PROJECTION_SESSION=""
   FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID=""
   FM_BACKEND_HERDR_PROJECTION_SEEDED_TAB_ID=""
@@ -2087,7 +2091,7 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
     echo "error: herdr presentation workspace create could not capture exact active workspace and tab; refusing a focus-unsafe projection" >&2
     return 1
   }
-  if out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$cwd" --label "$workspace_label" --no-focus 2>/dev/null); then
+  if out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$seed_cwd" --label "$workspace_label" --no-focus 2>/dev/null); then
     :
   else
     fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "workspace create" || true

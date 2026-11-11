@@ -175,6 +175,21 @@ if [ "$status" -eq 0 ] && [ "$mutation" = tab-create ]; then
       ;;
   esac
 fi
+# A focus-safe cleanup removes a pane either by an explicit close or by ending
+# its proved idle shell, which Herdr reports only as the pane's absence on the
+# cleanup's own verifying read; record that first absence as the removal.
+if [ "$status" -ne 0 ] && [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$POST_CREATE_ABORT_CONTROL" ]; then
+  for task_dir in "$POST_CREATE_ABORT_CONTROL"/abort-*; do
+    [ -d "$task_dir" ] || continue
+    [ "${3:-}" = "$(cat "$task_dir/task-pane" 2>/dev/null || true)" ] || continue
+    if [ ! -e "$task_dir/pane-gone" ]; then
+      : > "$task_dir/pane-gone"
+      gone_focus=$(focus_snapshot || printf ambiguous/ambiguous)
+      printf 'pane-gone\t%s\t%s\t%s\n' "$gone_focus" "$gone_focus" "$3" >> "$FOCUS_AUDIT_LOG"
+    fi
+    break
+  done
+fi
 if [ "$status" -eq 0 ] && [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$POST_CREATE_ABORT_CONTROL" ]; then
   for task_dir in "$POST_CREATE_ABORT_CONTROL"/abort-*; do
     [ -d "$task_dir" ] || continue
@@ -207,9 +222,6 @@ set -u
   done
   printf '\n'
 } >> "$TREEHOUSE_CALL_LOG"
-if [ -d "$POST_CREATE_ABORT_CONTROL" ] && [ "${1:-}" = get ]; then
-  exit 0
-fi
 exec "$REAL_TREEHOUSE" "$@"
 SH
 
@@ -401,7 +413,7 @@ finish_concurrent_expected_abort() {  # <id> <status> <stdout> <stderr>
   local id=$1 status=$2 out=$3 err=$4
   [ "$status" -ne 0 ] || fail "post-create abort fixture $id unexpectedly succeeded"
   if grep -F "task set is locked" "$err" >/dev/null 2>&1; then
-    if spawn_task "$id" "$HOME_DIR" "$PROJECT_DIR" > "$out" 2> "$err"; then
+    if FM_SPAWN_WORKTREE_POLLS=2 spawn_task "$id" "$HOME_DIR" "$PROJECT_DIR" > "$out" 2> "$err"; then
       fail "post-create abort fixture $id unexpectedly succeeded after task-set publication completed"
     fi
   fi
@@ -824,29 +836,34 @@ pass "real Herdr lab: forced workspace.move failure leaves a successful worker i
 mkdir -p "$POST_CREATE_ABORT_CONTROL"
 ABORT_START=$(log_line_count)
 ABORT_FOCUS_START=$(focus_audit_line_count)
-spawn_task abort-a "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-a.out" 2> "$TMP_ROOT/abort-a.err" &
+# Each spawn leases a real worktree, then the fake reports its new task pane
+# outside it, so the endpoint proof fails after create and the abort both
+# cleans the projection and returns the lease.
+FM_SPAWN_WORKTREE_POLLS=2 spawn_task abort-a "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-a.out" 2> "$TMP_ROOT/abort-a.err" &
 ABORT_A_PID=$!
-spawn_task abort-b "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-b.out" 2> "$TMP_ROOT/abort-b.err" &
+FM_SPAWN_WORKTREE_POLLS=2 spawn_task abort-b "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/abort-b.out" 2> "$TMP_ROOT/abort-b.err" &
 ABORT_B_PID=$!
 if wait "$ABORT_A_PID"; then ABORT_A_STATUS=0; else ABORT_A_STATUS=$?; fi
 if wait "$ABORT_B_PID"; then ABORT_B_STATUS=0; else ABORT_B_STATUS=$?; fi
 finish_concurrent_expected_abort abort-a "$ABORT_A_STATUS" "$TMP_ROOT/abort-a.out" "$TMP_ROOT/abort-a.err"
 finish_concurrent_expected_abort abort-b "$ABORT_B_STATUS" "$TMP_ROOT/abort-b.out" "$TMP_ROOT/abort-b.err"
-grep -F "did not yield an isolated worktree" "$TMP_ROOT/abort-a.err" >/dev/null 2>&1 \
-  || fail "post-create abort fixture A did not reach the armed validation failure"
-grep -F "did not yield an isolated worktree" "$TMP_ROOT/abort-b.err" >/dev/null 2>&1 \
-  || fail "post-create abort fixture B did not reach the armed validation failure"
+for ABORT_TASK in abort-a abort-b; do
+  grep -F "new endpoint is in '$POST_CREATE_ABORT_CONTROL/not-a-worktree', not its leased worktree" "$TMP_ROOT/$ABORT_TASK.err" >/dev/null 2>&1 \
+    || fail "post-create abort fixture $ABORT_TASK did not reach the armed validation failure: $(cat "$TMP_ROOT/$ABORT_TASK.err")"
+  grep -F "note: spawn of $ABORT_TASK aborted; released its leased worktree" "$TMP_ROOT/$ABORT_TASK.err" >/dev/null 2>&1 \
+    || fail "post-create abort fixture $ABORT_TASK did not return its clean lease: $(cat "$TMP_ROOT/$ABORT_TASK.err")"
+done
 ABORT_A_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-a/task-pane")
 ABORT_B_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-b/task-pane")
 ABORT_SEQUENCE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
   $1 == "workspace-create" && $4 ~ /^└ abort-a · p:/ { print "create-a" }
   $1 == "workspace-create" && $4 ~ /^└ abort-b · p:/ { print "create-b" }
-  $1 == "pane-close" && $4 == a { print "close-a" }
-  $1 == "pane-close" && $4 == b { print "close-b" }
+  ($1 == "pane-close" || $1 == "pane-gone") && $4 == a && !closed_a { closed_a = 1; print "close-a" }
+  ($1 == "pane-close" || $1 == "pane-gone") && $4 == b && !closed_b { closed_b = 1; print "close-b" }
 ')
 case "$ABORT_SEQUENCE" in
   $'create-a\nclose-a\ncreate-b\nclose-b'|$'create-b\nclose-b\ncreate-a\nclose-a') ;;
-  *) fail "concurrent post-create abort cleanup interleaved outside the presentation lock: $ABORT_SEQUENCE" ;;
+  *) fail "concurrent post-create abort cleanup interleaved outside the presentation lock: $ABORT_SEQUENCE"$'\n'"abort-a: $(cat "$TMP_ROOT/abort-a.err")"$'\n'"abort-b: $(cat "$TMP_ROOT/abort-b.err")"$'\n'"focus audit: $(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG")" ;;
 esac
 ABORT_UNRESTORED=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
   ($1 == "workspace-create" || $1 == "tab-create" || $1 == "workspace-move" || ($1 == "pane-close" && $4 != a && $4 != b)) && $2 != $3 { print }

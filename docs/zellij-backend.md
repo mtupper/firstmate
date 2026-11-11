@@ -68,8 +68,9 @@ Every pane operation passes an explicit `--pane-id` because a new session can fo
 
 `pane_cwd` follows a top-level shell `cd` but not a foreground subshell.
 The spawn's endpoint worktree proof therefore sends begin and end markers around `pwd`, captures the marked block, and joins wrapped path lines.
-A session Firstmate starts runs from `$HOME` without the launching session's home, harness, or pane identity (`bin/fm-env-scrub-lib.sh`), because Zellij gives that environment to every pane it creates or resurrects.
 This active probe is scoped to spawn-time worktree discovery and is not advertised as a general live-cwd API.
+
+A session Firstmate starts runs from `$HOME` without the launching session's home, harness, or pane identity (`bin/fm-env-scrub-lib.sh`), because Zellij gives that environment to every pane it creates or resurrects.
 
 `new-tab` has no no-focus flag and temporarily focuses the created tab in attached clients.
 The adapter records the previously active tab and immediately restores it with `go-to-tab-by-id`.

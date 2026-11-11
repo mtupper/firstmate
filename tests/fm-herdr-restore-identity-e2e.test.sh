@@ -119,11 +119,36 @@ proc_env_value() {
   fi
 }
 
+# An empty read proves nothing: macOS ps -E prints no environment for a system
+# shell such as /bin/zsh, so every absence check first requires a readable PATH.
 assert_proc_lacks_identity() {  # <pid> <label>
   local name value
+  [ -n "$(proc_env_value "$1" PATH)" ] \
+    || fail "$2 (pid $1): its environment is unreadable, so an identity check would pass blind"
   for name in $IDENTITY_NAMES; do
     value=$(proc_env_value "$1" "$name")
     [ -z "$value" ] || fail "$2 inherited $name=$value"
+  done
+}
+
+# shell_dump <pane> <file>: have the pane's shell write its own environment and
+# then its physical working directory, the exact inputs a resumed agent typed
+# into that shell inherits. Polls until the trailing directory line lands.
+dump_written() { grep -q '^PWD_P=' "$1" 2>/dev/null; }
+shell_dump() {
+  local q
+  q=$(printf '%q' "$2")
+  lab pane send-text "$1" "{ env; printf 'PWD_P=%s\\n' \"\$(pwd -P)\"; } > $q.tmp && mv $q.tmp $q" >/dev/null \
+    || fail "could not type into pane $1"
+  lab pane send-keys "$1" enter >/dev/null || fail "could not submit to pane $1"
+  fm_test_wait_until --seconds 20 dump_written "$2" || fail "pane $1's shell never wrote its environment"
+}
+
+assert_dump_lacks_identity() {  # <file> <label>
+  local name
+  grep -q '^PATH=' "$1" || fail "$2: the shell's environment dump is empty, so an identity check would pass blind"
+  for name in $IDENTITY_NAMES; do
+    ! grep -q "^$name=" "$1" || fail "$2 inherited $(grep "^$name=" "$1" | head -1)"
   done
 }
 
@@ -173,19 +198,28 @@ restored_shell() {
 panes_restored() { [ -n "$(restored_shell "$CREW_PANE")" ] && [ -n "$(restored_shell "$MATE_PANE")" ]; }
 fm_test_wait_until --seconds 30 panes_restored \
   || fail 'Herdr did not restore both task panes'
-CREW_SHELL=$(restored_shell "$CREW_PANE")
-MATE_SHELL=$(restored_shell "$MATE_PANE")
 CREW_CWD=$(lab pane get "$CREW_PANE" | jq -r '.result.pane.cwd // empty')
 MATE_CWD=$(lab pane get "$MATE_PANE" | jq -r '.result.pane.cwd // empty')
+shell_dump "$CREW_PANE" "$TMP_ROOT/crew-restored.env"
+shell_dump "$MATE_PANE" "$TMP_ROOT/mate-restored.env"
+WT_REAL=$(cd "$WT" && pwd -P)
+SM_REAL=$(cd "$SM_HOME" && pwd -P)
 
-[ "$(cd "$CREW_CWD" && pwd -P)" = "$(cd "$WT" && pwd -P)" ] \
+# Herdr restores a pane into the directory its top-level shell had when the
+# server stopped; a spawn that entered the worktree only in a subshell came back
+# in the primary clone. Check Herdr's record and the restored shell itself.
+[ "$(cd "$CREW_CWD" && pwd -P)" = "$WT_REAL" ] \
   || fail "restored crewmate pane is in '$CREW_CWD', not its worktree '$WT' (primary clone: $PROJ)"
-[ "$(cd "$MATE_CWD" && pwd -P)" = "$(cd "$SM_HOME" && pwd -P)" ] \
+grep -qxF "PWD_P=$WT_REAL" "$TMP_ROOT/crew-restored.env" \
+  || fail "restored crewmate shell runs in '$(sed -n 's/^PWD_P=//p' "$TMP_ROOT/crew-restored.env")', not its worktree '$WT'"
+[ "$(cd "$MATE_CWD" && pwd -P)" = "$SM_REAL" ] \
   || fail "restored secondmate pane is in '$MATE_CWD', not its home '$SM_HOME'"
+grep -qxF "PWD_P=$SM_REAL" "$TMP_ROOT/mate-restored.env" \
+  || fail "restored secondmate shell runs in '$(sed -n 's/^PWD_P=//p' "$TMP_ROOT/mate-restored.env")', not its home '$SM_HOME'"
 pass 'real named lab: a restored crewmate comes back in its worktree, a secondmate in its home'
 
-assert_proc_lacks_identity "$CREW_SHELL" 'the restored crewmate shell'
-assert_proc_lacks_identity "$MATE_SHELL" 'the restored secondmate shell'
+assert_dump_lacks_identity "$TMP_ROOT/crew-restored.env" 'the restored crewmate shell'
+assert_dump_lacks_identity "$TMP_ROOT/mate-restored.env" 'the restored secondmate shell'
 pass 'real named lab: restored shells, where a resumed agent starts, carry no other session identity'
 
 STATUS=$(lab status --json) || fail 'could not read final lab version evidence'

@@ -129,8 +129,12 @@ proc_env_value() {
   fi
 }
 
+# An empty read proves nothing: macOS ps -E prints no environment for a system
+# shell such as /bin/zsh, so every absence check first requires a readable PATH.
 assert_proc_lacks_identity() {  # <pid> <label>
   local name value
+  [ -n "$(proc_env_value "$1" PATH)" ] \
+    || fail "$2 (pid $1): its environment is unreadable, so an identity check would pass blind"
   for name in $IDENTITY_NAMES; do
     value=$(proc_env_value "$1" "$name")
     [ -z "$value" ] || fail "$2 inherited $name=$value"

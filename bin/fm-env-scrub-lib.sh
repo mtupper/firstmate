@@ -13,8 +13,8 @@
 # (which turns transcript saving off), and its own multiplexer pane. A fresh
 # spawn masked part of that with its launch prefix, but a pane restored after a
 # reboot replays only the agent's resume command, so restored agents acted for
-# the home that happened to start the server. docs/verification/env-identity.md
-# holds the reproduction.
+# the home that happened to start the server. docs/verification/runtime-backends.md
+# "Restore identity and agent resume" holds the reproduction.
 #
 # Two scopes, one owner:
 #   agent   The firstmate identity, routing, and internal-handoff names below

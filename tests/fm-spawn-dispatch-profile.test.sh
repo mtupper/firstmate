@@ -553,8 +553,9 @@ test_cursor_threads_model_workspace_and_omits_effort_axis() {
   # break the isolation contract the spawn assertion depends on.
   assert_not_contains "$launch" " --worktree" "cursor launch must never allocate a second worktree"
   assert_not_contains "$launch" " -w " "cursor launch must never allocate a second worktree"
-  # An inherited CLAUDECODE would otherwise outrank cursor's own marker.
-  assert_contains "$launch" "env -u CLAUDECODE" "cursor launch must clear foreign primary markers"
+  # An inherited CLAUDECODE would otherwise outrank cursor's own marker;
+  # bin/fm-agent-env.sh clears it (tests/fm-env-identity.test.sh pins that).
+  assert_contains "$launch" "/bin/fm-agent-env.sh' " "cursor launch must start through the identity-clearing launcher"
   assert_contains "$launch" "encode launch-brief" "cursor launch did not deliver the brief positionally"
   assert_not_contains "$launch" "--effort" "cursor launch must not invent a separate effort flag"
   assert_not_contains "$launch" "--reasoning-effort" "cursor launch must not invent a separate reasoning-effort flag"

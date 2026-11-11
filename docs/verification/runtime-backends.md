@@ -579,9 +579,11 @@ That command is the guard that refreshes this record; run it after every Herdr u
 ### Restore identity and agent resume
 
 Verified 2026-11-11 on Herdr 0.8.2 protocol 20 with Claude Code 2.1.311 on macOS aarch64.
-A guarded named-lab stop and start restores each pane as a fresh login shell, a child of the server, in the pane's recorded creation directory, and with Herdr's default `resume_agents_on_restore = true` types the agent's resume command into it; the resumed `claude --resume <id>` is a child of that shell and inherits exactly its environment and directory.
+A guarded named-lab stop and start restores each pane as a fresh login shell, a child of the server, in the directory the pane's top-level shell had when the server stopped, and with Herdr's default `resume_agents_on_restore = true` types the agent's resume command into it; the resumed `claude --resume <id>` is a child of that shell and inherits exactly its environment and directory.
 A Claude agent started with an inherited `CLAUDE_CODE_CHILD_SESSION` prints `Transcript saving is off - inherited CLAUDE_CODE_CHILD_SESSION marker`, saves no transcript, and its restore fails with `No conversation found with session ID: <id>`.
 Claude Code also uses an inherited `CLAUDE_PROJECT_DIR` for hook commands, so it must never cross a launch.
+A `cd` in a pane's top-level shell moves the restored directory, while a `cd` inside a subshell does not, so a pane that entered its worktree through a `treehouse get` subshell restored into the project.
+macOS `ps -E` prints no environment for a system shell such as `/bin/zsh`, so the regression reads each restored shell's environment by having that shell write it, and both guards refuse a blind read.
 
 ```sh
 tests/fm-herdr-restore-identity-e2e.test.sh

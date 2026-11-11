@@ -160,9 +160,23 @@ test_lock_refuses_another_home() {
   pass "the session lock refuses to take another home's helm"
 }
 
+test_watch_arm_refuses_another_home() {
+  local out rc before
+  seed_main_state
+  before=$(snapshot "$MAIN/state")
+  out=$(in_dir "$SM" bash "$SM/bin/fm-watch-arm.sh" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "watcher arm for another home"
+  assert_contains "$out" "watcher: FAILED - firstmate: refusing to act for home $MAIN" "the arm refusal must say why"
+  [ ! -e "$MAIN/state/.watch.lock" ] || fail "a refused arm claimed the main home's watcher"
+  [ "$(snapshot "$MAIN/state")" = "$before" ] || fail "a refused arm changed the main home's state"
+  pass "watcher arming refuses to claim another home's watcher"
+}
+
 test_wake_drain_refuses_another_home
 test_wake_drain_refuses_a_foreign_state_override
 test_cross_home_callers_outside_any_home_still_work
 test_turnend_guard_stands_down_for_another_home
 test_sessionstart_refuses_another_home_in_context
 test_lock_refuses_another_home
+test_watch_arm_refuses_another_home

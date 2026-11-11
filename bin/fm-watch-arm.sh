@@ -63,6 +63,15 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-primary-scope-lib.sh
+. "$SCRIPT_DIR/fm-primary-scope-lib.sh"
+
+# Arming claims this home's watcher singleton and its wakes, so an inherited
+# environment naming another home must never arm that home's watcher.
+if ! fm_home_identity_check "$FM_HOME" "$STATE"; then
+  echo "watcher: FAILED - $FM_HOME_IDENTITY_REASON"
+  exit 1
+fi
 
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 WATCH_LOCK="$STATE/.watch.lock"

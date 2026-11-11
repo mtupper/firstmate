@@ -255,11 +255,12 @@ No Herdr-specific copy of that protocol exists.
 ## Restart and liveness behavior
 
 Stopping and restarting a named Herdr server preserves workspace, tab, pane, and label ids, but the underlying harness processes and live agent registrations do not survive.
-Since Herdr 0.8, with its default `resume_agents_on_restore = true`, a restart or reboot resumes each supported agent whose official integration reported a session reference: Herdr starts a fresh shell in the pane's recorded directory and types the agent's resume command, such as `claude --resume <id>`, into it.
+Since Herdr 0.8, with its default `resume_agents_on_restore = true`, a restart or reboot resumes each supported agent whose official integration reported a session reference: Herdr starts a fresh shell in the directory the pane's top-level shell had when the server stopped and types the agent's resume command, such as `claude --resume <id>`, into it.
 That shell has the server's environment and none of the launch command fm-spawn typed, so Firstmate makes both inputs belong to the task rather than to whoever started the server:
 
 - Every server start, in the adapter and in `bin/fm-herdr-lab.sh`, runs from `$HOME` with the daemon scope of `bin/fm-env-scrub-lib.sh` cleared, so a server started by an endpoint read inside a firstmate session keeps none of that session's home, state, harness-session, or pane identity.
-- A ship or scout endpoint is created inside its leased worktree, so the directory Herdr records and restores is the worktree, never the primary clone.
+- A ship or scout endpoint is created inside its leased worktree, so its top-level shell, whose directory Herdr records and restores, is the worktree.
+  An endpoint that entered its worktree only through a `treehouse get` subshell restored into the primary clone, because a subshell's directory is not recorded.
 - A restored agent then resolves its home from the checkout it runs in, and `bin/fm-primary-scope-lib.sh`'s home-identity backstop refuses any hook, wake drain, or session lock whose environment still names another firstmate home.
 - `bin/fm-control.sh <id> relaunch` moves an agent-free restored shell into the recorded worktree before it proves the endpoint, then launches through `bin/fm-agent-env.sh`.
 
@@ -327,7 +328,9 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
   The tmux backend has a busy-queue fallback, but Herdr still reports this case as submit pending and needs a separate adapter fix.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
-- A Herdr server started outside Firstmate keeps its starter's environment; agents restored there are refused by the home-identity backstop until a relaunch, and endpoints created before worktree leasing still restore into their project directory.
+- A Herdr server started outside Firstmate keeps its starter's environment; a restored agent running in a firstmate home is refused by the home-identity backstop until a relaunch.
+- An endpoint created before worktree leasing keeps its top-level shell in the project and restores there, where nothing refuses an agent of a non-firstmate project.
+  A relaunch after such a restore moves that shell into the worktree; a relaunch before one does not, and a respawn always does.
 
 ## Regression entry points
 
