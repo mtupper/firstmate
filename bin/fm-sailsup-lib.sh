@@ -43,6 +43,9 @@
 # Sourcing: requires bin/fm-session-lock-lib.sh and bin/fm-secondmate-parent-lib.sh;
 # set -u safe; no side effects.
 
+# shellcheck source=bin/fm-lock-lib.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/fm-lock-lib.sh"
+
 FM_SAILSUP_DELEGATION_MAX_AGE_DEFAULT=1800
 
 # fm_sailsup_session_id <state>: the identity of the session holding this
@@ -132,7 +135,12 @@ fm_sailsup_parent_approval_check() {  # <home> <approval-id>
   max=${FM_SAILSUP_DELEGATION_MAX_AGE:-$FM_SAILSUP_DELEGATION_MAX_AGE_DEFAULT}
   case "$max" in ''|*[!0-9]*) max=$FM_SAILSUP_DELEGATION_MAX_AGE_DEFAULT ;; esac
   now=$(date +%s)
-  mtime=$(stat -f %m "$record" 2>/dev/null || stat -c %Y "$record" 2>/dev/null || echo 0)
+  # GNU stat -f means file-system status, so the platform picks the flag
+  # (fm_lock_path_mtime); an unreadable age refuses rather than passing.
+  mtime=$(fm_lock_path_mtime "$record")
+  case "$mtime" in
+    ''|*[!0-9]*) echo "the age of the parent's approval '$approval' cannot be read; the captain must run /sailsup again"; return 1 ;;
+  esac
   [ $((now - mtime)) -le "$max" ] \
     || { echo "the parent's approval '$approval' is older than ${max}s; the captain must run /sailsup again"; return 1; }
   printf '%s\n' "$FM_SECONDMATE_PARENT_HOME"
