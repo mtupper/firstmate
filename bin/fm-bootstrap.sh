@@ -18,7 +18,14 @@
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
-#                 "FMX: X mode on ..." or "FMX: X mode off ...".
+#                 "FMX: X mode on ..." or "FMX: X mode off ...",
+#                 "PERMISSION_MODE: reduced|unknown <id> kind=<kind> ...".
+#          PERMISSION_MODE lines come from bin/fm-permission-mode.sh scan, a
+#          read-only check that runs in locked and read-only sessions alike:
+#          one line per Claude direct report whose live process is not
+#          provably in its launch bypass mode (typically a Herdr restore that
+#          resumed it without the flag). Bootstrap never restores bypass mode;
+#          only the captain's /sailsup does.
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
 #          purely local fast-forward and never an origin fetch. Remote routes
@@ -1267,4 +1274,5 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   fi
 fi
 local_phase && secondmate_handoff_detect
+local_phase && FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-permission-mode.sh" scan
 exit 0

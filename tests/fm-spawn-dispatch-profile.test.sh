@@ -886,6 +886,30 @@ test_claude_secondmate_home_keeps_prompt_suggestions_off_on_resume() {
   pass "a claude secondmate resumed in its home keeps prompt suggestions off and keeps the home's settings"
 }
 
+# A restored secondmate can park on a permission prompt like any crewmate, so its
+# home carries the same keyed-blocker hooks, merged beside the home's own hooks
+# and replaced rather than duplicated on every respawn.
+test_claude_secondmate_home_surfaces_permission_prompts() {
+  local id out status settings
+  id=profile-claude-sm-perm-z22
+  make_claude_secondmate_case profile-claude-sm-perm "$id"
+  settings="$SM_DIR/.claude/settings.local.json"
+  mkdir -p "$SM_DIR/.claude"
+  printf '%s\n' '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo own-stop"}]}]}}' > "$settings"
+  for _ in 1 2; do
+    out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$SM_DIR" --secondmate)
+    status=$?
+    expect_code 0 "$status" "claude secondmate spawn should succeed"$'\n'"$out"
+  done
+  [ "$(jq '[.hooks.PermissionRequest[].hooks[].command | select(contains("fm-claude-permission-hook.sh") and contains(" request "))] | length' "$settings")" = 1 ] \
+    || fail "the secondmate home must carry exactly one permission-request hook: $(cat "$settings")"
+  [ "$(jq '[.hooks.Stop[].hooks[].command | select(contains("fm-claude-permission-hook.sh") and contains(" clear "))] | length' "$settings")" = 1 ] \
+    || fail "the secondmate home must clear a parked-prompt blocker at turn end, once: $(cat "$settings")"
+  jq -e '[.hooks.Stop[].hooks[].command] | index("echo own-stop") != null' "$settings" >/dev/null \
+    || fail "the home's own Stop hook was lost: $(cat "$settings")"
+  pass "a claude secondmate home surfaces a parked permission prompt and keeps its own hooks"
+}
+
 test_claude_secondmate_leaves_unreadable_home_settings_untouched() {
   local id out status settings
   id=profile-claude-sm-bad-z20
@@ -921,6 +945,7 @@ test_non_claude_secondmate_writes_no_claude_settings() {
 test_no_profile_keeps_claude_profile_defaults
 test_claude_worktree_keeps_prompt_suggestions_off_on_resume
 test_claude_secondmate_home_keeps_prompt_suggestions_off_on_resume
+test_claude_secondmate_home_surfaces_permission_prompts
 test_claude_secondmate_leaves_unreadable_home_settings_untouched
 test_non_claude_secondmate_writes_no_claude_settings
 test_non_cursor_launch_clears_inherited_cursor_markers

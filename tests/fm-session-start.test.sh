@@ -1341,6 +1341,55 @@ EOF
   pass "herdr endpoint liveness is reported per task: alive for a live pane, dead for a gone one"
 }
 
+# A Herdr restore resumes a Claude worker with a bare `claude --resume <id>`. The
+# captain decided that bypass mode never comes back on its own: session start
+# must NAME the reduced worker and change nothing - no keystroke, no relaunch -
+# so the worker stays in the account's default mode until the captain's
+# /sailsup. The fake Herdr logs every call, and any input sent to the pane fails
+# the test.
+make_fake_herdr_restored_claude() {
+  local fakebin=$1 pane=$2 session_id=$3
+  cat > "$fakebin/herdr" <<SH
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "\$*" >> "\$FM_FAKE_HERDR_LOG"
+case "\${1:-} \${2:-}" in
+  "pane get") [ "\${3:-}" = "$pane" ] && printf '{"result":{"pane":{"pane_id":"$pane"}}}\n' && exit 0; exit 1 ;;
+  "agent get") printf '{"result":{"agent":{"agent_status":"idle"}}}\n'; exit 0 ;;
+  "pane process-info")
+    printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"$pane","foreground_processes":[{"pid":4100,"name":"claude","argv0":"claude","argv":["claude","--resume","$session_id"]}]}}}\n'
+    exit 0 ;;
+  "pane send-text"|"pane send-keys"|"pane run"|"agent prompt"|"agent send-keys")
+    printf 'MUTATION %s\n' "\$*" >> "\$FM_FAKE_HERDR_LOG"; exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/herdr"
+}
+
+test_restored_claude_worker_stays_reduced_through_session_start() {
+  local rec root home fakebin out sid=0caf573c-fe40-4108-98e5-aae323589297 log
+  rec=$(new_world restored-reduced)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_herdr_restored_claude "$fakebin" "w1:p7" "$sid"
+  log="$home/herdr.log"
+  : > "$log"
+  printf 'window=sess:w1:p7\nendpoint_task_id=crew-r\nworktree=%s\nproject=%s\nkind=ship\nharness=claude\nbackend=herdr\nherdr_session=sess\nherdr_workspace_id=w1\nherdr_tab_id=w1:t1\nherdr_pane_id=w1:p7\n' \
+    "$home/wt" "$home/proj" > "$home/state/crew-r.meta"
+
+  out=$(FM_FAKE_HERDR_LOG="$log" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "PERMISSION_MODE: reduced crew-r kind=ship session=$sid" \
+    "session start must name the restored worker that runs below its launch bypass mode"
+  assert_not_contains "$(cat "$log")" "MUTATION" "session start must never act on a reduced worker"
+  out=$(FM_FAKE_HERDR_LOG="$log" FM_HOME="$home" PATH="$fakebin:$BASE_PATH" "$ROOT/bin/fm-permission-mode.sh" task crew-r)
+  [ "$out" = "reduced session=$sid" ] || fail "the worker must still be reduced after session start, got '$out'"
+  pass "a restored Claude worker stays reduced through session start until the captain's /sailsup"
+}
+
 # --- composition: real scripts run, not reimplemented ------------------------
 
 test_composition_invokes_real_scripts() {
@@ -2420,6 +2469,7 @@ test_status_tail_line_cap
 test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
+test_restored_claude_worker_stays_reduced_through_session_start
 test_composition_invokes_real_scripts
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_queued_bound_discloses_its_remainder

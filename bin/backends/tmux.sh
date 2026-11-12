@@ -351,6 +351,43 @@ EOF
   esac
 }
 
+# fm_backend_tmux_agent_argv: see fm_backend_agent_argv in bin/fm-backend.sh.
+# The process must sit in the pane tty's foreground process group, the same
+# scope the liveness probe above reads, and its kernel name or argv[0] must
+# carry <harness> as its basename or as an exact install-path component.
+# Arguments come from /proc/<pid>/cmdline where it exists (exact) and from
+# `ps -o args=` otherwise; macOS ps joins arguments with spaces, so there an
+# argument containing whitespace arrives split across lines.
+fm_backend_tmux_agent_argv() {  # <target> <harness>
+  local target=$1 harness=$2 tty pid pgid tpgid comm args argv0 found='' count=0
+  local -a argv
+  tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 1
+  [ -n "$tty" ] || return 1
+  while read -r pid pgid tpgid comm; do
+    [ -n "$comm" ] && [ "$pgid" = "$tpgid" ] || continue
+    args=$(LC_ALL=C ps -ww -p "$pid" -o args= 2>/dev/null) || continue
+    args=${args#"${args%%[![:space:]]*}"}
+    argv0=${args%%[[:space:]]*}
+    if [ "${comm##*/}" = "$harness" ] || [ "${argv0##*/}" = "$harness" ] \
+       || [ "$(fm_harness_path_name "$comm" 2>/dev/null)" = "$harness" ] \
+       || [ "$(fm_harness_path_name "$argv0" 2>/dev/null)" = "$harness" ]; then
+      found=$pid
+      count=$((count + 1))
+    fi
+  done <<EOF
+$(LC_ALL=C ps -t "${tty#/dev/}" -o pid=,pgid=,tpgid=,comm= 2>/dev/null)
+EOF
+  [ "$count" -eq 1 ] || return 1
+  if [ -r "/proc/$found/cmdline" ]; then
+    tr '\n\0' ' \n' < "/proc/$found/cmdline"
+    return 0
+  fi
+  args=$(LC_ALL=C ps -ww -p "$found" -o args= 2>/dev/null) || return 1
+  read -r -a argv <<< "$args"
+  [ "${#argv[@]}" -gt 0 ] || return 1
+  printf '%s\n' "${argv[@]}"
+}
+
 # Backward-compatible three-state view for callers that only need a yes/no
 # agent verdict. The detailed state contract is owned by fm_backend_agent_state.
 fm_backend_tmux_agent_alive() {  # <target>

@@ -611,6 +611,32 @@ ok - live: resumed agents show no prompt suggestion while the control resumed be
 
 The live guard is the command that refreshes this record; run it after every Herdr or Claude Code upgrade.
 
+### Restored Claude permission mode and /sailsup
+
+Verified 2026-11-12 on Herdr 0.8.2 with Claude Code 2.1.311 on macOS aarch64, in a guarded named lab.
+A fresh `claude --dangerously-skip-permissions` showed `bypass permissions on`, and Herdr's `pane process-info` reported its exact argv, flag included.
+After a lab stop and start the agent ran as a bare `claude --resume <id>` with `auto mode on`, the account default.
+A `PermissionRequest` hook fired the moment `Do you want to proceed?` rendered, carrying `permission_mode` (`default` in that run) and `tool_name`, while Herdr's agent status read `blocked`; a `Notification` hook with `notification_type: permission_prompt` followed within 20 seconds.
+A single Escape declined the prompt, and no `Stop` hook fired for that turn.
+`claude --resume <id> --dangerously-skip-permissions '<question>'` continued the same conversation, answered from earlier context, showed `bypass permissions on`, and its argv carried the flag and the same id.
+Under `auto` mode the same restored worker ran `rm -rf` on a directory outside its project without any prompt, so a parked prompt is account- and mode-dependent; the guard pins Claude's default mode in its fixture to reach one deterministically.
+
+```sh
+FM_SAILSUP_LIVE_E2E=1 tests/fm-sailsup-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - live: a fresh Claude launch reads as bypass mode (bypass session=none)
+ok - live: a Herdr restore resumes the worker below bypass mode and the scan reports it (reduced session=25f431d9-07f7-4c4d-ac3c-2b16f91ba76b)
+ok - live: /sailsup resumed the same Claude session 25f431d9-07f7-4c4d-ac3c-2b16f91ba76b in bypass mode (herdr 0.8.2, claude 2.1.311 (Claude Code))
+ok - live: a parked permission prompt became a keyed blocker naming /sailsup (blocked: [key=permission-prompt] waiting at a tool-permission prompt for Bash; it runs in default permission mode, below its launch bypass mode, so the captain's /sailsup approves restoring bypass mode for this session)
+ok - live: /sailsup declined the parked prompt, resumed session 9fdcf79b-feaf-4594-82c3-f88a6265e0eb in bypass mode, and the worker finished its turn
+```
+
+That guard is the command that refreshes this record; run it after every Herdr or Claude Code upgrade.
+
 ### Away-mode transport
 
 The Pi/Herdr return and injection path was reverified on Herdr 0.7.3 and Pi 0.80.7:
