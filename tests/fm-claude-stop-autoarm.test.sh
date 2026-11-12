@@ -229,9 +229,10 @@ test_inert_when_lock_held_by_other_harness() {
   dir=$(make_primary_dir "$TMP_ROOT/other-lock")
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" actionable
-  # The trailing no-op keeps the fake harness process alive instead of allowing
-  # bash to exec the final sleep into a non-harness process.
-  "$FAKE_CLAUDE" -c 'sleep 60; :' &
+  # Waiting on a background sleep keeps the fake harness process alive instead
+  # of allowing bash to exec the sleep into a non-harness process, and the trap
+  # reaps that sleep so it cannot hold the suite's output open after the kill.
+  "$FAKE_CLAUDE" -c 'sleep 60 & s=$!; trap "kill \$s; exit 0" TERM; wait "$s"' &
   other=$!
   printf '%s\n' "$other" > "$dir/state/.lock"
   out=$(printf '%s\n' '{"session_id":"s"}' | FM_HOME="$dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' 2>&1); status=$?
@@ -577,6 +578,131 @@ test_fm_lock_status_still_works_with_shared_lib() {
   pass "fm-lock: shared session-lock lib preserves the status path"
 }
 
+# --- hook timeout and renewal -------------------------------------------------
+
+# Emulate Claude Code's measured Stop-hook timeout (docs/verification/supervision.md):
+# the hook host leads its own process group, and at the registered timeout the
+# whole group receives TERM while anything the hook prints or returns afterward
+# is ignored. Sets HOOK_RC and HOOK_ELAPSED; output lands in <dir>/hook.out.
+run_autoarm_under_hook_timeout() {  # <dir> <timeout-seconds>
+  local dir=$1 timeout=$2 pid killer started
+  printf '%s\n' '{"session_id":"sess-autoarm","stop_hook_active":false}' > "$dir/payload"
+  started=$(date +%s)
+  (
+    cd "$dir" || exit 1
+    FM_HOME="$dir" exec perl -e 'setpgrp(0, 0) or exit 125; exec @ARGV' "$FAKE_CLAUDE" -c '
+      printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+      "$FM_HOME/bin/fm-claude-stop-autoarm.sh" < "$FM_HOME/payload"
+    '
+  ) > "$dir/hook.out" 2>&1 &
+  pid=$!
+  (
+    sleeper=
+    trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null; exit 0' TERM
+    sleep "$timeout" &
+    sleeper=$!
+    wait "$sleeper" && kill -TERM -- "-$pid" 2>/dev/null
+  ) >/dev/null 2>&1 &
+  killer=$!
+  HOOK_RC=0
+  wait "$pid" || HOOK_RC=$?
+  HOOK_ELAPSED=$(( $(date +%s) - started ))
+  kill "$killer" 2>/dev/null || true
+  wait "$killer" 2>/dev/null || true
+  # The killed host does not wait for the hook's own TERM handling, so settle
+  # on the hook releasing its owner lock, which its EXIT trap does last.
+  fm_wait_deadline=$(fm_test_deadline 10)
+  while [ -e "$dir/state/.claude-autoarm.lock" ] && fm_test_before "$fm_wait_deadline"; do
+    sleep 0.1
+  done
+}
+
+write_hook_registration() {  # <dir> <timeout-seconds>
+  mkdir -p "$1/.claude"
+  cat > "$1/.claude/settings.json" <<JSON
+{"hooks":{"Stop":[{"hooks":[
+  {"type":"command","command":"exec \"\$CLAUDE_PROJECT_DIR\"/bin/fm-turnend-guard.sh --claude"},
+  {"type":"command","command":"exec \"\$CLAUDE_PROJECT_DIR\"/bin/fm-claude-stop-autoarm.sh","asyncRewake":true,"timeout":$2}
+]}]}}
+JSON
+}
+
+drain_and_ack_home() {  # <dir>
+  local dir=$1 err sequence generation
+  err="$dir/drain.err"
+  (cd "$dir" && FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" "$dir/bin/fm-wake-drain.sh") >/dev/null 2> "$err" || return 1
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation .*$/\1/p' "$err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
+  [ -n "$sequence" ] && [ -n "$generation" ] || return 1
+  (cd "$dir" && FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" "$dir/bin/fm-wake-drain.sh" --ack-through "$sequence" \
+    --recovery-generation "$generation") >/dev/null 2>&1
+}
+
+watch_lock_holder_alive() {  # <dir>
+  local pid
+  pid=$(cat "$1/state/.watch.lock/pid" 2>/dev/null || true)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# The reproduced incident: a quiet primary whose real watcher cycle sees no
+# actionable wake for the whole hook timeout. The registered timeout is scaled
+# down from 8 hours to 8 seconds. Each Stop-launched hook must hand off before
+# the kill, and the turn that handles the renewal must leave the next cycle
+# quiet instead of resurfacing the retired watcher as a wake.
+test_quiet_real_cycle_renews_before_hook_timeout() {
+  local dir cycle
+  dir=$(make_primary_dir "$TMP_ROOT/quiet-renewal")
+  cp -R "$ROOT/bin/." "$dir/bin/"
+  write_hook_registration "$dir" 8
+  : > "$dir/state/task.meta"
+  printf '%s\n' fm-pr-check-migration-scan-v1 > "$dir/state/.pr-check-migration-scan-v1"
+  printf '%s\n' fm-pr-check-migration-v1 > "$dir/state/.pr-check-migration-v1"
+  chmod 0600 "$dir/state/.pr-check-migration-scan-v1" "$dir/state/.pr-check-migration-v1"
+  export FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999
+  for cycle in 1 2; do
+    run_autoarm_under_hook_timeout "$dir" 8
+    [ "$HOOK_RC" -eq 2 ] \
+      || fail "quiet cycle $cycle: hook must rewake before the 8s timeout kill, got rc=$HOOK_RC after ${HOOK_ELAPSED}s: $(cat "$dir/hook.out")"
+    [ "$HOOK_ELAPSED" -lt 8 ] || fail "quiet cycle $cycle: renewal arrived at ${HOOK_ELAPSED}s, not before the timeout"
+    assert_contains "$(cat "$dir/hook.out")" "firstmate watcher renewal" "quiet cycle $cycle must hand off with the renewal banner"
+    ! grep -q 'rearm-resurface' "$dir/hook.out" \
+      || fail "quiet cycle $cycle resurfaced a handled renewal as a wake: $(cat "$dir/hook.out")"
+    ! watch_lock_holder_alive "$dir" || fail "quiet cycle $cycle left its watcher running after the hook exited"
+    [ "$(epoch_outcome "$dir")" = rewake ] || fail "quiet cycle $cycle must record the rewake outcome, got: $(epoch_outcome "$dir")"
+    drain_and_ack_home "$dir" || fail "quiet cycle $cycle: renewal turn could not drain and acknowledge"
+  done
+  [ "$(grep -c 'reason=lifetime-renewal' "$dir/state/.watch-cycle-exits.log")" -eq 2 ] \
+    || fail "each quiet cycle must record exactly one lifetime-renewal close: $(cat "$dir/state/.watch-cycle-exits.log")"
+  ! grep -q 'reason=arm-interrupted' "$dir/state/.watch-cycle-exits.log" \
+    || fail "a quiet cycle was killed instead of renewed: $(cat "$dir/state/.watch-cycle-exits.log")"
+  unset FM_POLL FM_SIGNAL_GRACE FM_CHECK_INTERVAL FM_HEARTBEAT
+  pass "auto-arm: a quiet real watcher cycle renews before the hook timeout, twice in a row, with no resurfaced wake"
+}
+
+# When the arm misses its lifetime and Claude's timeout kills the tree, the
+# hook cannot rewake; it records the cause for the watcher-down alarm instead.
+# An earlier TERM is ordinary session teardown and records nothing.
+test_missed_renewal_records_timeout_kill() {
+  local dir
+  dir=$(make_primary_dir "$TMP_ROOT/missed-renewal")
+  : > "$dir/state/task.meta"
+  cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+trap 'exit 143' TERM
+sleep 30 &
+wait
+SH
+  chmod +x "$dir/bin/fm-watch-arm.sh"
+  FM_CLAUDE_AUTOARM_RENEW_AFTER=60 run_autoarm_under_hook_timeout "$dir" 2
+  [ "$HOOK_RC" -ne 2 ] || fail "a hook killed before its deadline must not rewake"
+  [ "$(epoch_outcome "$dir")" = arming ] || fail "teardown before the deadline must not record a timeout kill, got: $(epoch_outcome "$dir")"
+  FM_CLAUDE_AUTOARM_RENEW_AFTER=1 run_autoarm_under_hook_timeout "$dir" 3
+  [ "$HOOK_RC" -ne 2 ] || fail "a hook killed by the timeout must not claim a rewake"
+  [ "$(epoch_outcome "$dir")" = timeout-killed ] || fail "a kill after the missed deadline must record timeout-killed, got: $(epoch_outcome "$dir")"
+  [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "a killed hook left its owner lock behind"
+  pass "auto-arm: a timeout kill after a missed renewal is recorded, while earlier teardown is not"
+}
+
 test_inert_in_child_worktree
 test_inert_without_session_lock
 test_reclaims_stale_session_lock_before_arming
@@ -599,3 +725,5 @@ test_need_vanished_mid_cycle_closes_quietly
 test_afk_mid_cycle_suppresses_rewake
 test_active_in_marked_secondmate_home
 test_fm_lock_status_still_works_with_shared_lib
+test_quiet_real_cycle_renews_before_hook_timeout
+test_missed_renewal_records_timeout_kill

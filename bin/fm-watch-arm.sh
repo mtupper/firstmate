@@ -51,6 +51,16 @@
 # state/.watch-triage.log remains exclusively the watcher's absorbed-wake debug
 # log and is never written here.
 #
+# FM_WATCH_ARM_LIFETIME=<seconds> bounds this arm for an adapter whose harness
+# kills its host process at a fixed timeout (the Claude Stop hook). When the
+# lifetime elapses before the cycle closes, the arm retires its own started
+# watcher (an attached peer is left running), records reason=lifetime-renewal in
+# the cycle ledger, prints
+#   watcher: renewal due - arm lifetime <N>s elapsed; a fresh arm must take over
+# and exits 0, so the adapter can hand off to a fresh arm before the harness
+# kills the whole tree. A wake the watcher printed while retiring is printed
+# first. Unset means no lifetime; an invalid value is a typed failure.
+#
 # --restart: stop ONLY this FM_HOME's watcher (the pid recorded in THIS home's
 # state/.watch.lock) and own a fresh cycle, or attach if a verified live peer
 # wins the singleton while the duplicate child stands down. It
@@ -93,6 +103,17 @@ CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
 CYCLE_LOG_KEEP_LINES=${FM_WATCH_CYCLE_LOG_KEEP_LINES:-1000}
 ARM_PID=${BASHPID:-$$}
+LIFETIME=${FM_WATCH_ARM_LIFETIME:-}
+unset FM_WATCH_ARM_LIFETIME
+case "$LIFETIME" in
+  '') ;;
+  *[!0-9]*|0)
+    echo "watcher: FAILED - invalid FM_WATCH_ARM_LIFETIME '$LIFETIME'"
+    exit 2
+    ;;
+esac
+LIFETIME_DEADLINE=
+[ -z "$LIFETIME" ] || LIFETIME_DEADLINE=$(( $(date +%s) + LIFETIME ))
 case "$CYCLE_LOG_MAX_BYTES" in ''|*[!0-9]*|0) CYCLE_LOG_MAX_BYTES=262144 ;; esac
 case "$CYCLE_LOG_KEEP_LINES" in ''|*[!0-9]*|0) CYCLE_LOG_KEEP_LINES=1000 ;; esac
 
@@ -321,6 +342,11 @@ close_unobserved_cycle() {
 attach_and_wait() {
   local attached_pid=$1
   while :; do
+    # Polled as well as signaled, because a signal that arrived while it was
+    # ignored during an owned cycle close is not redelivered.
+    if [ -n "$LIFETIME_DEADLINE" ] && [ "$(date +%s)" -ge "$LIFETIME_DEADLINE" ]; then
+      handle_attached_lifetime
+    fi
     if healthy_watcher; then
       if [ "$HEALTHY_PID" != "$attached_pid" ] || [ "$HEALTHY_IDENTITY" != "$cycle_watcher_identity" ]; then
         cycle_log_append unknown unknown lock-replaced "attached:$HEALTHY_PID"
@@ -351,13 +377,56 @@ attach_and_wait() {
 handle_attached_signal() {
   local signal=$1 rc=$2
   trap - HUP TERM INT
+  trap '' USR1
   cycle_log_append "$rc" "$signal" arm-interrupted none
   exit "$rc"
+}
+
+report_renewal() {
+  echo "watcher: renewal due - arm lifetime ${LIFETIME}s elapsed; a fresh arm must take over"
+}
+
+# An attached arm does not own the watcher it follows, so renewal only ends
+# this arm and leaves that peer running for the next arm to attach to.
+# shellcheck disable=SC2329 # Invoked indirectly by the USR1 trap below.
+handle_attached_lifetime() {
+  trap - HUP TERM INT
+  trap '' USR1
+  cycle_log_append 0 none lifetime-renewal none
+  report_renewal
+  exit 0
 }
 
 trap 'handle_attached_signal HUP 129' HUP
 trap 'handle_attached_signal TERM 143' TERM
 trap 'handle_attached_signal INT 130' INT
+trap 'handle_attached_lifetime' USR1
+
+# The lifetime timer is a separate child that signals this arm with USR1, so a
+# blocking wait on the watcher returns at the deadline. It is stopped on every
+# exit and dies with the process group when the host tree is torn down.
+lifetime_watchdog=
+start_lifetime_watchdog() {
+  [ -n "$LIFETIME" ] || return 0
+  (
+    sleeper=
+    trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null; exit 0' TERM
+    sleep "$LIFETIME" &
+    sleeper=$!
+    wait "$sleeper" && kill -USR1 "$ARM_PID" 2>/dev/null
+  ) &
+  lifetime_watchdog=$!
+}
+
+# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap below.
+stop_lifetime_watchdog() {
+  [ -n "$lifetime_watchdog" ] || return 0
+  kill -TERM "$lifetime_watchdog" 2>/dev/null || true
+  wait "$lifetime_watchdog" 2>/dev/null || true
+  lifetime_watchdog=
+}
+
+trap stop_lifetime_watchdog EXIT
 
 watch_output_has_wake() {
   local out=$1
@@ -439,6 +508,8 @@ if [ "$mode" = restart ]; then
   fi
 fi
 
+start_lifetime_watchdog
+
 # If a genuinely live+fresh watcher already holds the lock, do not start a second
 # one - attach to that cycle and wait until it ends so the harness notify fires
 # then, not as an immediate empty wake. (--restart skips this: it just stopped
@@ -470,6 +541,7 @@ cleanup_child() {
 handle_arm_signal() {
   local signal=$1 rc=$2
   trap - HUP TERM INT
+  trap '' USR1
   if [ -n "$child" ] && fm_pid_alive "$child"; then
     kill -TERM "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
@@ -479,9 +551,29 @@ handle_arm_signal() {
   exit "$rc"
 }
 
+# Retire the owned watcher and wait for it to release the singleton before
+# reporting renewal, so the next arm never overlaps this cycle.
+# shellcheck disable=SC2329 # Invoked indirectly by the USR1 trap below.
+handle_arm_lifetime() {
+  trap - HUP TERM INT
+  trap '' USR1
+  if [ -n "$child" ] && fm_pid_alive "$child"; then
+    kill -TERM "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+  fi
+  cycle_log_append 0 none lifetime-renewal none
+  if [ -n "$child_out" ] && watch_output_has_wake "$child_out"; then
+    print_watch_output "$child_out"
+  fi
+  report_renewal
+  cleanup_child
+  exit 0
+}
+
 trap 'handle_arm_signal HUP 129' HUP
 trap 'handle_arm_signal TERM 143' TERM
 trap 'handle_arm_signal INT 130' INT
+trap 'handle_arm_lifetime' USR1
 
 child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
   echo "watcher: FAILED - no live watcher with a fresh beacon"
@@ -498,6 +590,9 @@ child_done=0
 
 owned_child_finished() {
   local rc=$1 signal reason_type status
+  # The cycle already closed on its own; a late lifetime signal must not turn
+  # its reason into a renewal.
+  trap '' USR1
   signal=$(cycle_signal_name "$rc")
   if [ "$rc" -eq 0 ] && watch_output_has_wake "$child_out"; then
     reason_type=$(watch_output_reason_type "$child_out")
@@ -519,6 +614,7 @@ owned_child_finished() {
       cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
       report_attached
       cycle_begin "$HEALTHY_PID" attached "$HEALTHY_IDENTITY"
+      trap 'handle_attached_lifetime' USR1
       attach_and_wait "$HEALTHY_PID"
       return $?
     fi

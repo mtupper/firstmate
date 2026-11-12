@@ -310,6 +310,26 @@ Observed output:
 ok - Claude 2.1.219 (Claude Code) live E2E reclaimed a stale session lock through session start, completed two tokenless Stop-owned rewake cycles, and preserved the competing-live-owner boundary
 ```
 
+### Claude Stop-hook timeout renewal, 2026-11-12
+
+Claude Code 2.1.311 was probed in a throwaway project whose only hook was an `asyncRewake` Stop entry with `timeout: 15`.
+The hook process led its own process group, and at exactly 15 seconds its background child received TERM, so Claude signals the whole hook process group.
+A variant hook that trapped that TERM, printed a banner to stderr, and exited 2 produced no rewake, so nothing a hook does after the timeout can wake the session.
+
+The renewal path was then run end to end with the real hook, arm, and watcher in an isolated home whose tracked Stop registration was scaled to 30 seconds:
+
+```sh
+claude --version
+FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+2.1.311 (Claude Code)
+ok - Claude 2.1.311 (Claude Code) live E2E reclaimed a stale session lock through session start, completed two tokenless Stop-owned rewake cycles, preserved the competing-live-owner boundary, and renewed 3 quiet cycles before a 30s hook timeout
+```
+
 Current entry points:
 
 ```sh

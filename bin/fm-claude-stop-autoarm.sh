@@ -27,6 +27,16 @@
 #   - Foreground arm: the owner runs bin/fm-watch-arm.sh in the FOREGROUND of
 #     this hook-owned process tree (never shell &); Claude owns the process
 #     group, so its timeout/session teardown kills arm and watcher together.
+#   - Renewal: Claude TERMs the whole hook process group at the registered
+#     timeout and ignores anything the hook does after that, so a quiet cycle
+#     must hand off before then. The hook derives a renewal deadline from the
+#     registered timeout in tracked .claude/settings.json (less a safety
+#     margin; FM_CLAUDE_AUTOARM_RENEW_AFTER overrides it) and passes the
+#     remaining budget to the arm as FM_WATCH_ARM_LIFETIME. A renewal close
+#     retires the watcher and exits 2 with a renewal banner, so the handling
+#     turn's Stop launches a fresh hook with a fresh timeout. A TERM that lands
+#     after the deadline means the renewal was missed: it records the epoch
+#     outcome timeout-killed for the watcher-down alarm.
 #   - Translation: while supervision is still needed and AFK remains inactive,
 #     an actionable arm close (signal:/stale:/check:/heartbeat) prints one
 #     rewake banner to stderr and exits 2, which wakes Claude even while idle
@@ -141,6 +151,7 @@ if ! fm_lock_set_role "$OWNER_LOCK" autoarm; then
   exit 0
 fi
 trap 'fm_lock_release "$OWNER_LOCK"' EXIT
+HOOK_STARTED=$(date +%s)
 
 write_epoch() {  # <outcome>
   local outcome=$1 seq tmp
@@ -158,6 +169,48 @@ write_epoch() {  # <outcome>
 
 write_epoch arming
 
+# --- renewal deadline ---------------------------------------------------------
+# The registered timeout is the single owner of when Claude kills this hook.
+# Renew one sixteenth of it early (at least RENEW_MARGIN_MIN seconds, at most
+# half the timeout), which is 30 minutes at the tracked 8-hour timeout.
+# date(1) is wall-clock time, which keeps advancing while the machine sleeps,
+# so the deadline can only arrive early relative to Claude's own timer.
+RENEW_DEFAULT=27000
+RENEW_MARGIN_MIN=5
+registered_hook_timeout() {
+  jq -r '[.hooks.Stop[]?.hooks[]? | select((.command // "") | contains("fm-claude-stop-autoarm.sh")) | .timeout][0] // empty' \
+    "$FM_ROOT/.claude/settings.json" 2>/dev/null
+}
+RENEW_AFTER=${FM_CLAUDE_AUTOARM_RENEW_AFTER:-}
+case "$RENEW_AFTER" in
+  ''|*[!0-9]*|0)
+    RENEW_AFTER=$RENEW_DEFAULT
+    hook_timeout=$(registered_hook_timeout)
+    case "$hook_timeout" in
+      ''|*[!0-9]*) ;;
+      *)
+        renew_margin=$((hook_timeout / 16))
+        [ "$renew_margin" -ge "$RENEW_MARGIN_MIN" ] || renew_margin=$RENEW_MARGIN_MIN
+        [ "$renew_margin" -le $((hook_timeout / 2)) ] || renew_margin=$((hook_timeout / 2))
+        [ "$hook_timeout" -gt "$renew_margin" ] && RENEW_AFTER=$((hook_timeout - renew_margin))
+        ;;
+    esac
+    ;;
+esac
+RENEW_DEADLINE=$((HOOK_STARTED + RENEW_AFTER))
+
+# A TERM after the deadline is Claude's timeout kill of a cycle that failed to
+# renew; record it so the watcher-down alarm can name the cause. An earlier
+# TERM is ordinary session teardown and records nothing.
+# shellcheck disable=SC2329 # Invoked indirectly by the TERM trap below.
+on_hook_terminated() {
+  trap - TERM
+  [ "$(date +%s)" -lt "$RENEW_DEADLINE" ] || write_epoch timeout-killed
+  [ -z "${OUT:-}" ] || rm -f "$OUT" 2>/dev/null || true
+  exit 143
+}
+trap on_hook_terminated TERM
+
 # X mode cadence: source the generated config so an X instance polls at its
 # 30s cadence (fm-bootstrap.sh x_mode_setup contract).
 # shellcheck source=/dev/null
@@ -173,14 +226,20 @@ write_epoch arming
 OUT=
 ACTIONABLE=0
 HEALTHY=0
+RENEW=0
 attempt=0
 while [ "$attempt" -lt "$AUTOARM_ATTEMPTS" ]; do
   attempt=$((attempt + 1))
+  remaining=$((RENEW_DEADLINE - $(date +%s)))
+  if [ "$remaining" -le 0 ]; then
+    RENEW=1
+    break
+  fi
   OUT=$(mktemp "$STATE/.claude-autoarm-output.XXXXXX") || OUT=
   if [ -n "$OUT" ]; then
-    "$SCRIPT_DIR/fm-watch-arm.sh" >"$OUT" 2>&1 || true
+    FM_WATCH_ARM_LIFETIME=$remaining "$SCRIPT_DIR/fm-watch-arm.sh" >"$OUT" 2>&1 || true
   else
-    "$SCRIPT_DIR/fm-watch-arm.sh" >/dev/null 2>&1 || true
+    FM_WATCH_ARM_LIFETIME=$remaining "$SCRIPT_DIR/fm-watch-arm.sh" >/dev/null 2>&1 || true
   fi
 
   # AFK may have appeared mid-cycle: the daemon owns triage now, so suppress
@@ -196,6 +255,10 @@ while [ "$attempt" -lt "$AUTOARM_ATTEMPTS" ]; do
     grep -Eq '^(signal:|stale:|check:|heartbeat($|:))' "$OUT" 2>/dev/null && ACTIONABLE=1
   fi
   [ "$ACTIONABLE" -eq 1 ] && break
+  if [ -n "$OUT" ] && grep -q '^watcher: renewal due' "$OUT" 2>/dev/null; then
+    RENEW=1
+    break
+  fi
 
   # A non-actionable close is benign when another verified watcher already owns
   # this home and is still beating within the shared grace window.
@@ -242,6 +305,19 @@ if [ "$ACTIONABLE" -eq 1 ]; then
     printf 'firstmate watcher wake - one supervision event needs a handling turn now.\n'
     [ -n "$OUT" ] && grep -E '^(signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | head -8
     printf 'Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.\n'
+  } >&2
+  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+  exit 2
+fi
+
+# A renewal is not an event: it only hands supervision to a fresh hook before
+# Claude's timeout. The handling turn retires the downtime episode the retired
+# watcher published, so the fresh cycle does not resurface it as a wake.
+if [ "$RENEW" -eq 1 ]; then
+  write_epoch rewake
+  {
+    printf 'firstmate watcher renewal - the Stop-owned watcher cycle reached its lifetime before the Stop hook timeout, so this hook retired it and hands supervision to the next turn end.\n'
+    printf 'Run bin/fm-wake-drain.sh, handle anything it presents, then run its exact WAKE_ACK_REQUIRED --ack-through command and end the turn. A renewal alone is not captain news. Do NOT run bin/fm-watch-arm.sh - the next turn end arms a fresh cycle automatically.\n'
   } >&2
   [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
   exit 2

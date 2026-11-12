@@ -210,6 +210,11 @@ if [ "$watcher_healthy" = false ]; then
       else
         printf '●  X-mode relay polling needs supervision, but %s.\n' "$watcher_cause"
       fi
+      # The Claude auto-arm records this only when the Stop hook timeout killed a
+      # cycle that missed its renewal; such a kill cannot wake the session.
+      if [ "$(sed -n 's/^.*outcome=\([a-z][a-z-]*\) .*$/\1/p' "$STATE/.claude-autoarm-epoch" 2>/dev/null)" = timeout-killed ]; then
+        printf '●  Cause: the Claude Stop hook timeout killed the last automatic watcher cycle before it renewed, and that kill cannot wake this session.\n'
+      fi
       if [ "$READ_ONLY" -eq 1 ]; then
         printf '●  This read-only session should report the lapse, not repair it.\n'
       else
