@@ -20,6 +20,19 @@ Only an exhausted failure with no verified watcher emits one last-resort notice 
 The Claude turn-end guard owns the monotonic failure progression, one-time attended fail-open, post-alarm continuation suppression, and positive recovery reset described in [`turnend-guard.md`](turnend-guard.md#harness-integrations).
 While supervision is still needed and away mode remains inactive, an actionable close wakes the idle session through exit 2.
 
+## Claude hook-timeout renewal
+
+Claude Code sends TERM to the whole Stop-hook process group at the registered hook timeout and ignores anything the hook prints or returns afterward, so a killed hook can never wake the session.
+A quiet cycle with no actionable wake for the whole timeout therefore must hand off before the kill, or supervision stays off until the next turn end.
+The hook derives a renewal deadline from the registered timeout in `.claude/settings.json`, one sixteenth early with a five-second floor and half-timeout cap, which is 30 minutes early at the tracked 8-hour timeout.
+It passes the remaining budget to `bin/fm-watch-arm.sh` as `FM_WATCH_ARM_LIFETIME`.
+At that lifetime the arm retires the watcher it started, waits until the singleton lock is released, records `reason=lifetime-renewal`, and reports renewal; an attached arm leaves the peer it does not own running.
+The hook then exits 2 with a renewal banner, so the handling turn drains, acknowledges the downtime episode the retired watcher published, and ends; its Stop launches a fresh hook with a fresh timeout and the next cycle starts without a resurfaced wake.
+Two watcher cycles never overlap, because the retired watcher exits before the hook returns.
+A renewal costs one short model turn per quiet timeout window; no tokenless handoff exists, because only a Stop hook's exit 2 can wake an idle Claude session.
+If the timeout kills a hook after its deadline anyway, the hook records the epoch outcome `timeout-killed`, and the watcher-down banner of `bin/fm-guard.sh` names that cause on the next turn.
+Recovery itself cannot start before that turn, because the kill leaves no process that can wake the session.
+
 ## Actionable wake ordering
 
 After an actionable Pi or OpenCode child close, the adapter starts and verifies one singleton successor before it delivers the original wake.
@@ -81,7 +94,9 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, recovery publication before stale-lock removal, the typed self-eviction failure, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
-`FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
+The same suite emulates Claude's process-group TERM at an 8-second registered timeout and proves two consecutive quiet real watcher cycles renew before the kill without a resurfaced wake, and that a kill after a missed deadline records `timeout-killed`.
+`tests/fm-watcher-lock.test.sh` covers arm lifetime renewal for an owned and an attached cycle, the invalid-lifetime failure, and the guard's named timeout-kill cause.
+`FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, checks the competing-live-owner negative control, and renews quiet real watcher cycles under a 30-second registered timeout.
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including monotonic failed-epoch progression, the integrated bounded fail-open, post-alarm continuation suppression, and positive recovery reset.
 
 ## Active limits and verification

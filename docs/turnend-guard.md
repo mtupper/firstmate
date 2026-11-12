@@ -85,6 +85,8 @@ After that alarm, the Stop auto-arm suppresses further exit-2 continuations unti
 The alarm cannot repeat during that failure episode, and a later unhealthy stop blocks again.
 A positively verified healthy watcher clears the failure notice, alarm, and block budget for a future independent episode.
 A Claude failure notice describes the automatic mechanism as broken and does not direct a routine manual background arm.
+A hook-timeout renewal records the ordinary `rewake` outcome, so the guard cooperates with a renewal turn exactly as with an actionable wake; [`watcher-continuity.md`](watcher-continuity.md#claude-hook-timeout-renewal) owns the renewal contract.
+The `timeout-killed` outcome is never recovery proof.
 
 OpenCode, Pi, and pi-signed expose passive callbacks for this purpose.
 Their adapters fail open at the hook boundary to protect the user session but schedule one bounded follow-up when the predicate blocks.

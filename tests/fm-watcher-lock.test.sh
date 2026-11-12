@@ -1223,6 +1223,82 @@ test_msys_pid_identity_uses_proc() {
   pass "MSYS process identity uses compatible /proc fields"
 }
 
+test_arm_lifetime_retires_owned_watcher_before_renewal() {
+  local dir state fakebin armout armpid status lock_pid
+  dir=$(make_case arm-lifetime-owned)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  mark_pr_check_migration_complete "$state"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_WATCH_ARM_LIFETIME=3 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
+  armpid=$!
+  fm_test_wait_until grep -qF 'watcher: started pid=' "$armout" || fail "lifetime arm did not start a watcher: $(cat "$armout")"
+  lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  wait_for_exit "$armpid" 100
+  status=$?
+  [ "$status" -eq 0 ] || fail "lifetime renewal must exit 0 (got $status): $(cat "$armout")"
+  grep -qF 'watcher: renewal due - arm lifetime 3s elapsed' "$armout" || fail "lifetime arm did not report renewal: $(cat "$armout")"
+  ! is_live_non_zombie "$lock_pid" || fail "lifetime renewal left its owned watcher running"
+  [ ! -e "$state/.watch.lock" ] || fail "lifetime renewal left the singleton lock held"
+  grep -q "arm_pid=$armpid.*origin=started.*exit_code=0.*signal=none.*reason=lifetime-renewal" "$state/.watch-cycle-exits.log" \
+    || fail "lifetime renewal was not recorded in the lifecycle ledger: $(cat "$state/.watch-cycle-exits.log")"
+  pass "arm lifetime retires its owned watcher and releases the singleton before reporting renewal"
+}
+
+test_arm_lifetime_leaves_attached_peer_running() {
+  local dir state fakebin out armout wpid armpid status
+  dir=$(make_case arm-lifetime-attached)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  armout="$dir/arm.out"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  wpid=$!
+  fm_test_wait_until test -e "$state/.last-watcher-beat" || fail "seed watcher did not beat"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] || fail "seed watcher did not take the lock"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_WATCH_ARM_LIFETIME=2 FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
+  armpid=$!
+  wait_for_exit "$armpid" 100
+  status=$?
+  [ "$status" -eq 0 ] || fail "attached lifetime renewal must exit 0 (got $status): $(cat "$armout")"
+  grep -qF "watcher: attached pid=$wpid" "$armout" || fail "lifetime arm did not attach first: $(cat "$armout")"
+  grep -qF 'watcher: renewal due' "$armout" || fail "attached lifetime arm did not report renewal: $(cat "$armout")"
+  is_live_non_zombie "$wpid" || fail "attached lifetime renewal terminated the peer watcher it does not own"
+  grep -q "arm_pid=$armpid.*watcher_pid=$wpid.*origin=attached.*reason=lifetime-renewal" "$state/.watch-cycle-exits.log" \
+    || fail "attached lifetime renewal was not recorded in the lifecycle ledger"
+  kill "$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  pass "arm lifetime ends an attached arm and leaves the peer watcher running"
+}
+
+test_arm_rejects_invalid_lifetime() {
+  local dir out status
+  dir=$(make_case arm-lifetime-invalid)
+  status=0
+  out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" FM_WATCH_ARM_LIFETIME=soon "$WATCH_ARM" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "an invalid lifetime must not arm"
+  assert_contains "$out" "watcher: FAILED - invalid FM_WATCH_ARM_LIFETIME" "an invalid lifetime must be a typed failure"
+  [ ! -e "$dir/state/.watch.lock" ] || fail "an invalid lifetime started a watcher"
+  pass "arm rejects an invalid lifetime as a typed failure without starting a watcher"
+}
+
+test_guard_names_timeout_kill_cause() {
+  local dir state err
+  dir=$(make_case guard-timeout-kill)
+  state="$dir/state"
+  err="$dir/guard.err"
+  printf 'project=x\n' > "$state/task.meta"
+  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
+  grep -F 'WATCHER DOWN - SUPERVISION IS OFF' "$err" >/dev/null || fail "guard did not print the watcher-down banner"
+  ! grep -F 'Stop hook timeout' "$err" >/dev/null || fail "guard named a timeout kill without a recorded one"
+  rm -f "$state/.guard-watcher-stale-banner"
+  printf 'epoch=4 owner_pid=1 outcome=timeout-killed updated_at=1\n' > "$state/.claude-autoarm-epoch"
+  CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
+  grep -F 'Cause: the Claude Stop hook timeout killed the last automatic watcher cycle' "$err" >/dev/null \
+    || fail "guard banner did not name the recorded timeout kill: $(cat "$err")"
+  pass "guard banner names a recorded Stop hook timeout kill as the watcher-down cause"
+}
+
 test_singleton_start
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
@@ -1254,3 +1330,7 @@ test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified
+test_arm_lifetime_retires_owned_watcher_before_renewal
+test_arm_lifetime_leaves_attached_peer_running
+test_arm_rejects_invalid_lifetime
+test_guard_names_timeout_kill_cause
