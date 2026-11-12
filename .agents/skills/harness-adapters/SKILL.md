@@ -196,6 +196,8 @@ If such a dialog is showing, accept it from an active firstmate session using `F
 Claude renders a predicted-next-prompt suggestion as dim/faint text inside an otherwise-empty composer after a turn completes.
 A plain `tmux capture-pane` cannot tell that ghost text apart from typed text.
 Firstmate launches every claude crewmate and secondmate with `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`, scoped to firstmate-launched agents through `bin/fm-spawn.sh`, so it never touches the captain's global config.
+A resume replays none of that launch prefix: a Herdr restore types a bare `claude --resume <id>`, and a manual resume carries nothing either.
+So `bin/fm-spawn.sh` also sets the variable in the `env` block of the agent directory's `.claude/settings.local.json`, which Claude reads on every start and which wins over an inherited `true`; a ship or scout worktree's file is firstmate-owned, and a secondmate home's file is merged rather than replaced.
 The CLI's `--prompt-suggestions` flag is print/SDK-mode only and does not suppress the interactive composer ghost text, verified empirically on v2.1.186.
 As defense in depth for any pane that flag cannot reach, including the captain's own firstmate composer that away-mode reads, the shared `fm_composer_strip_ghost` extractor in `bin/fm-composer-lib.sh` removes dim/faint SGR 2 ghost runs before pending-input classification on every styled reader (tmux, herdr, and Zellij).
 Its broader dark-TRUECOLOR placeholder handling and dark-theme tradeoff are documented in `docs/herdr-backend.md` "Composer and injection safety", with active captures in `docs/verification/runtime-backends.md`.

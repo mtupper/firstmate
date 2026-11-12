@@ -834,7 +834,95 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
   pass "active crew-dispatch profile does not block secondmate launches"
 }
 
+# A Herdr restore resumes a claude agent with a bare `claude --resume <id>` that
+# carries none of the launch prefix, so prompt suggestions must stay off through
+# the directory's settings.local.json env block, which every claude start reads.
+resume_env_value() {  # <settings.local.json>
+  jq -r '.env.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION // "unset"' "$1" 2>/dev/null
+}
+
+test_claude_worktree_keeps_prompt_suggestions_off_on_resume() {
+  local rec id out status settings
+  id=profile-claude-resume-z18
+  rec=$(make_spawn_case profile-claude-resume claude "$id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "claude ship spawn should succeed"$'\n'"$out"
+  settings="$WT_DIR/.claude/settings.local.json"
+  [ "$(resume_env_value "$settings")" = false ] \
+    || fail "a claude resumed in the worktree would show prompt suggestions: $(cat "$settings" 2>/dev/null)"
+  jq -e '.hooks.Stop' "$settings" >/dev/null || fail "the worktree settings lost the turn-end hooks"
+  pass "a claude worker resumed in its worktree keeps prompt suggestions off"
+}
+
+make_claude_secondmate_case() {  # <name> <id>
+  local rec
+  rec=$(make_spawn_case "$1" codex "$2")
+  read_case_record "$rec"
+  printf '%s\n' claude > "$HOME_DIR/config/secondmate-harness"
+  SM_DIR="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$SM_DIR" "$2"
+}
+
+test_claude_secondmate_home_keeps_prompt_suggestions_off_on_resume() {
+  local id out status settings
+  id=profile-claude-sm-resume-z19
+  make_claude_secondmate_case profile-claude-sm-resume "$id"
+  settings="$SM_DIR/.claude/settings.local.json"
+  mkdir -p "$SM_DIR/.claude"
+  printf '%s\n' '{"permissions":{"allow":["Bash(ls)"]},"env":{"KEEP_ME":"1"}}' > "$settings"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$SM_DIR" --secondmate)
+  status=$?
+  expect_code 0 "$status" "claude secondmate spawn should succeed"$'\n'"$out"
+  assert_contains "$out" "spawned $id harness=claude kind=secondmate" "secondmate did not launch on claude"
+  [ "$(resume_env_value "$settings")" = false ] \
+    || fail "a claude resumed in the secondmate home would show prompt suggestions: $(cat "$settings")"
+  [ "$(jq -r '.env.KEEP_ME' "$settings")" = 1 ] || fail "the home's own env setting was lost: $(cat "$settings")"
+  [ "$(jq -r '.permissions.allow[0]' "$settings")" = 'Bash(ls)' ] \
+    || fail "the home's own permissions were lost: $(cat "$settings")"
+  pass "a claude secondmate resumed in its home keeps prompt suggestions off and keeps the home's settings"
+}
+
+test_claude_secondmate_leaves_unreadable_home_settings_untouched() {
+  local id out status settings
+  id=profile-claude-sm-bad-z20
+  make_claude_secondmate_case profile-claude-sm-bad "$id"
+  settings="$SM_DIR/.claude/settings.local.json"
+  mkdir -p "$SM_DIR/.claude"
+  printf '%s\n' '{"env": not json' > "$settings"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$SM_DIR" --secondmate)
+  status=$?
+  expect_code 0 "$status" "an unreadable home settings file must not block the secondmate launch"$'\n'"$out"
+  [ "$(cat "$settings")" = '{"env": not json' ] || fail "an unreadable home settings file was rewritten"
+  assert_contains "$out" "may show prompt suggestions" "the skipped setting should be reported"
+  assert_contains "$(cat "$LAUNCH_LOG")" "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude" \
+    "the fresh launch must still turn prompt suggestions off"
+  pass "an unreadable secondmate settings file is reported and left untouched"
+}
+
+test_non_claude_secondmate_writes_no_claude_settings() {
+  local rec id out status sm
+  id=profile-codex-sm-resume-z21
+  rec=$(make_spawn_case profile-codex-sm-resume codex "$id")
+  read_case_record "$rec"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  status=$?
+  expect_code 0 "$status" "codex secondmate spawn should succeed"$'\n'"$out"
+  assert_absent "$sm/.claude/settings.local.json" "a codex secondmate must not get claude settings"
+  pass "a non-claude secondmate home gets no claude settings"
+}
+
 test_no_profile_keeps_claude_profile_defaults
+test_claude_worktree_keeps_prompt_suggestions_off_on_resume
+test_claude_secondmate_home_keeps_prompt_suggestions_off_on_resume
+test_claude_secondmate_leaves_unreadable_home_settings_untouched
+test_non_claude_secondmate_writes_no_claude_settings
 test_non_cursor_launch_clears_inherited_cursor_markers
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
