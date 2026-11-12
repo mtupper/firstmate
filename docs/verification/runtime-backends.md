@@ -585,6 +585,12 @@ Claude Code also uses an inherited `CLAUDE_PROJECT_DIR` for hook commands, so it
 A `cd` in a pane's top-level shell moves the restored directory, while a `cd` inside a subshell does not, so a pane that entered its worktree through a `treehouse get` subshell restored into the project.
 macOS `ps -E` prints no environment for a system shell such as `/bin/zsh`, so the regression reads each restored shell's environment by having that shell write it, and both guards refuse a blind read.
 
+Verified 2026-11-12 on the same versions: Herdr's restore record keeps only each pane's directory and the agent's session id, so the resumed command is a bare `claude --resume <id>` and no launch-only environment prefix or flag survives.
+With `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=true` inherited from the server, a resumed Claude drew its predicted next prompt as dim (SGR 2) composer text, for example `Suggest one more README improvement`, including a worker whose original launch carried `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`.
+A directory `.claude/settings.local.json` with `{"env":{"CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION":"false"}}` kept the resumed composer empty and won over the inherited `true`, while `{"promptSuggestionEnabled":false}` lost to it.
+The resumed Claude kept its model but not `--dangerously-skip-permissions`; its footer showed the account's default permission mode (`auto mode on`).
+The suggestion appeared only on `sonnet`, not the account default `opus[1m]`, and only after several open-ended replies, which is why the live guard pins its model and conversation and requires a control Claude resumed without firstmate's settings to show the ghost before it trusts an empty worker composer.
+
 ```sh
 tests/fm-herdr-restore-identity-e2e.test.sh
 FM_HERDR_RESTORE_LIVE_E2E=1 tests/fm-herdr-restore-identity-live-e2e.test.sh
@@ -600,6 +606,7 @@ ok - real named lab: restored shells, where a resumed agent starts, carry no oth
 evidence: herdr=0.8.2 protocol=20 default-session-tripwire=armed
 ok - live: Herdr resumed both Claude agents (herdr 0.8.2, claude 2.1.311 (Claude Code))
 ok - live: resumed agents run in their own worktree or home with no other session identity
+ok - live: resumed agents show no prompt suggestion while the control resumed beside them does (claude 2.1.311 (Claude Code))
 ```
 
 The live guard is the command that refreshes this record; run it after every Herdr or Claude Code upgrade.

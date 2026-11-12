@@ -1140,8 +1140,9 @@ launch_template() {
     # otherwise-empty composer and would otherwise read like real typed input when
     # firstmate captures the pane (see the harness-adapters skill). It is a per-launch env
     # prefix scoped to this firstmate-launched agent; it never touches the captain's
-    # global config. The CLI's --prompt-suggestions flag is print/SDK-mode only and
-    # does NOT suppress the interactive ghost text (verified empirically), so the env
+    # global config. A resume does not replay this prefix, so pin_claude_resume_env
+    # below also carries the setting in the directory's settings.local.json. The
+    # CLI's --prompt-suggestions flag is print/SDK-mode only and does NOT suppress the interactive ghost text (verified empirically), so the env
     # var is the correct control. The dim-aware composer reader in fm-tmux-lib.sh is
     # the defense-in-depth backstop for any pane this flag cannot reach.
     claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
@@ -2335,6 +2336,36 @@ exclude_path() {
   mkdir -p "$(dirname "$EXCL")"
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >> "$EXCL"
 }
+# The launch template's CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false prefix
+# reaches only the process this script types. A Herdr restore after a reboot
+# resumes the agent with a bare `claude --resume <id>` in a fresh shell, and a
+# manual resume in the same directory carries no prefix either, so the setting
+# also lives in the directory's .claude/settings.local.json `env` block, which
+# Claude reads on every start, resumed or not. Settings `env` was verified to
+# survive a real Herdr restore and to win over an inherited
+# CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=true; the promptSuggestionEnabled
+# settings key loses to that variable, so it is not the carrier. A ship or
+# scout worktree's file is firstmate-owned and written whole below; a
+# secondmate home's file may hold other settings, so this merges the one key
+# and leaves an unreadable or symlinked file untouched with a warning.
+pin_claude_resume_env() {  # <settings.local.json>
+  local file=$1 tmp
+  if [ -L "$file" ]; then
+    echo "warning: $file is a symlink; a resumed claude agent there may show prompt suggestions" >&2
+    return 0
+  fi
+  mkdir -p "$(dirname "$file")"
+  [ -e "$file" ] || printf '{}\n' > "$file"
+  tmp="$file.fm-tmp.$$"
+  if jq -e 'type == "object"' "$file" >/dev/null 2>&1 \
+     && jq '.env = ((.env // {}) + {"CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false"})' "$file" > "$tmp" 2>/dev/null \
+     && mv -f "$tmp" "$file"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  echo "warning: could not add the prompt-suggestions setting to $file; a resumed claude agent there may show prompt suggestions" >&2
+  return 0
+}
 if [ "$RELAUNCH" -eq 1 ]; then
   # Retire the previous incarnation's per-task harness wiring before arming the
   # new one. Without this, a harness switch would leave the old adapter's hook
@@ -2396,7 +2427,8 @@ if [ "$KIND" != secondmate ]; then
       # legacy fm-send --key Escape path records idle/fm-interrupt. Stop keeps
       # the turn-ended NOTIFICATION touch for the watcher. Every
       # hook command tolerates a refused event (|| true) so a stale-gen writer
-      # can never break Claude's own lifecycle.
+      # can never break Claude's own lifecycle. The env block is the resume
+      # carrier for prompt suggestions (pin_claude_resume_env above).
       mkdir -p "$WT/.claude"
       busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
       busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source claude-hook"
@@ -2405,7 +2437,7 @@ if [ "$KIND" != secondmate ]; then
       j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
       j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
       cat > "$WT/.claude/settings.local.json" <<EOF
-{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
+{"env":{"CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION":"false"},"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
       exclude_path '.claude/settings.local.json'
       ;;
@@ -2620,6 +2652,10 @@ EOF
       printf 'token=%s\n' "${auth_file##*/}" > "$WT/.fm-kimi-turnend"
       exclude_path '.fm-kimi-turnend'
       ;;
+  esac
+else
+  case "$HARNESS" in
+    claude*) pin_claude_resume_env "$WT/.claude/settings.local.json" ;;
   esac
 fi
 

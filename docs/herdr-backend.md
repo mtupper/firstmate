@@ -263,6 +263,7 @@ That shell has the server's environment and none of the launch command fm-spawn 
   An endpoint that entered its worktree only through a `treehouse get` subshell restored into the primary clone, because a subshell's directory is not recorded.
 - A restored agent then resolves its home from the checkout it runs in, and `bin/fm-primary-scope-lib.sh`'s home-identity backstop refuses any hook, wake drain, or session lock whose environment still names another firstmate home.
 - `bin/fm-control.sh <id> relaunch` moves an agent-free restored shell into the recorded worktree before it proves the endpoint, then launches through `bin/fm-agent-env.sh`.
+- Settings a restored Claude must keep live in the agent directory's `.claude/settings.local.json`, because the restore replays no launch prefix or flag; today that is prompt suggestions off (the harness-adapters skill's claude section owns the carrier).
 
 A restored same-labeled tab with a missing pane or no registered agent is a husk.
 Create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
@@ -329,6 +330,7 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
   The tmux backend has a busy-queue fallback, but Herdr still reports this case as submit pending and needs a separate adapter fix.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
 - A Herdr server started outside Firstmate keeps its starter's environment; a restored agent running in a firstmate home is refused by the home-identity backstop until a relaunch.
+- A restored Claude also loses these launch-only settings: it runs in the account's default permission mode instead of `--dangerously-skip-permissions`, without a `CLAUDE_CONFIG_DIR` that only its launch named, and without the task's `GOTMPDIR` and trace context; it keeps its model.
 - An endpoint created before worktree leasing keeps its top-level shell in the project and restores there, where nothing refuses an agent of a non-firstmate project.
   A relaunch after such a restore moves that shell into the worktree; a relaunch before one does not, and a respawn always does.
 

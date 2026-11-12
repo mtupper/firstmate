@@ -11,8 +11,12 @@
 # through bin/fm-spawn.sh under a server started from a polluted environment,
 # restarts the guarded named lab, and requires each agent to come back as a
 # resumed Claude process in its own worktree or home with no other session's
-# identity. It spends a few tokens per run and refuses a pass that resumed
-# nothing. Refresh docs/verification/runtime-backends.md from its output after
+# identity. The server also starts with CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=true
+# inherited, which forces Claude's predicted-next-prompt ghost text past every
+# account and focus gate, so the guard can require that a resumed worker still
+# shows none while a control Claude resumed without firstmate's settings does.
+# It spends a few tokens per run and refuses a pass that resumed nothing or a
+# ghost check whose control showed no ghost. Refresh docs/verification/runtime-backends.md from its output after
 # any Herdr or Claude Code upgrade.
 #
 # Usage:
@@ -52,6 +56,7 @@ FAKEBIN="$TMP_ROOT/fakebin"
 PRIMARY="$TMP_ROOT/primary-home"
 SM_HOME="$TMP_ROOT/secondmate-home"
 PROJ="$TMP_ROOT/project"
+CONTROL="$TMP_ROOT/control"
 mkdir -p "$FAKEBIN" "$PRIMARY/state" "$PRIMARY/data/rl-crew" "$PRIMARY/config" \
   "$SM_HOME/state" "$SM_HOME/data" "$SM_HOME/config" "$SM_HOME/projects" "$SM_HOME/bin"
 printf 'off\n' > "$PRIMARY/config/herdr-presentation-spaces"
@@ -62,6 +67,7 @@ PROBE='Live restore probe only. Reply with the single word READY. Do not run any
 printf '%s\n' "$PROBE" > "$SM_HOME/data/charter.md"
 printf 'Delivery contract: mode=direct-PR\n%s\n' "$PROBE" > "$PRIMARY/data/rl-crew/brief.md"
 fm_git_init_commit "$PROJ"
+fm_git_init_commit "$CONTROL"
 fm_git_add_origin "$PROJ" "$PROJ.origin.git"
 
 HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name restore-live)
@@ -83,6 +89,7 @@ POLLUTED=(
   FM_SESSION_START_STAGE_FILE="$TMP_ROOT/stage"
   CLAUDECODE=1 CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_PROJECT_DIR="$PRIMARY"
   CLAUDE_CODE_ENTRYPOINT=cli CLAUDE_PID=4242
+  CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=true
 )
 IDENTITY_NAMES='FM_HOME FM_STATE_OVERRIDE FM_SESSION_START_STAGE_FILE CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_PROJECT_DIR CLAUDE_CODE_ENTRYPOINT CLAUDE_PID'
 
@@ -184,12 +191,15 @@ proc_cwd() {
   if [ -e "/proc/$1/cwd" ]; then readlink "/proc/$1/cwd"; else lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'; fi
 }
 
+# Every agent runs one model on which Claude 2.1.311 was observed to render a
+# suggestion after a restore; the account default (opus[1m]) rendered none.
+SUGGEST_MODEL=${FM_HERDR_RESTORE_LIVE_MODEL:-sonnet}
 spawn_claude() {  # <id> <fm-spawn args...>
   local id=$1
   shift
   (cd "$PRIMARY" && env -u FM_STATE_OVERRIDE PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" \
     HERDR_SESSION="$HERDR_LAB_SESSION" FM_SPAWN_NO_GUARD=1 \
-    FM_HOME="$PRIMARY" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-spawn.sh" "$id" "$@" --harness claude) \
+    FM_HOME="$PRIMARY" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-spawn.sh" "$id" "$@" --harness claude --model "$SUGGEST_MODEL") \
     > "$TMP_ROOT/spawn-$id.out" 2>&1 \
     || fail "spawn of $id failed"$'\n'"$(cat "$TMP_ROOT/spawn-$id.out")"
 }
@@ -200,14 +210,52 @@ spawn_claude rl-mate "$SM_HOME" --secondmate --backend herdr
 CREW_PANE=$(sed -n 's/^herdr_pane_id=//p' "$PRIMARY/state/rl-crew.meta")
 MATE_PANE=$(sed -n 's/^herdr_pane_id=//p' "$PRIMARY/state/rl-mate.meta")
 [ -n "$WT" ] && [ -n "$CREW_PANE" ] && [ -n "$MATE_PANE" ] || fail 'spawn did not record worktree and panes'
+# The control is a plain Claude in a directory firstmate never wrote settings
+# for, launched the same way, so after the restore it shows what a resumed
+# worker would show without firstmate's carrier.
+CONTROL_WS=$(lab workspace create --cwd "$CONTROL" --label rl-control --no-focus 2>/dev/null \
+  | jq -r '.result.workspace.workspace_id // empty')
+CONTROL_PANE=$(lab tab create --workspace "$CONTROL_WS" --cwd "$CONTROL" --label rl-control --no-focus 2>/dev/null \
+  | jq -r '.result.root_pane.pane_id // empty')
+[ -n "$CONTROL_PANE" ] || fail 'could not create the control pane'
+lab pane run "$CONTROL_PANE" "'$ROOT/bin/fm-agent-env.sh' claude --dangerously-skip-permissions --model '$SUGGEST_MODEL' '$PROBE'" >/dev/null \
+  || fail 'could not start the control Claude'
 
 answered() {  # <pane>
   accept_dialog "$1"
   lab_screen "$1" | grep -q 'READY'
 }
-both_answered() { answered "$CREW_PANE" && answered "$MATE_PANE"; }
+both_answered() { answered "$CREW_PANE" && answered "$MATE_PANE" && answered "$CONTROL_PANE"; }
 fm_test_wait_until --seconds 180 both_answered \
   || fail "the live Claude agents never answered (claude $CLAUDE_VERSION)"
+# A resumed Claude was observed to render a suggestion only after a
+# conversation of several open-ended exchanges (none after a single reply), and
+# a suggestion that repeats the last prompt is dropped. So every agent answers
+# two different open-ended follow-ups before the restart and one more after it.
+# Nothing is typed afterwards, so any text left in a composer is Claude's own
+# ghost suggestion, which the control's dim (SGR 2) composer row confirms.
+composer_text() {  # <pane>: the composer row's text after the prompt glyph
+  lab_screen "$1" | grep -E '^[[:space:]]*❯' | tail -1 | sed -E 's/^[[:space:]]*❯[[:space:]]*//; s/[[:space:]]+$//'
+}
+turns_done() { lab_screen "$1" | grep -Ec '^[[:space:]]*✻ .* · done' || true; }
+follow_up_all() {  # <prompt>
+  local crew mate control pane
+  crew=$(turns_done "$CREW_PANE")
+  mate=$(turns_done "$MATE_PANE")
+  control=$(turns_done "$CONTROL_PANE")
+  for pane in "$CREW_PANE" "$MATE_PANE" "$CONTROL_PANE"; do
+    lab pane send-text "$pane" "$1" >/dev/null 2>&1 || fail "could not type the follow-up into $pane"
+    sleep 0.5
+    lab pane send-keys "$pane" enter >/dev/null 2>&1 || fail "could not submit the follow-up in $pane"
+  done
+  all_replied() {
+    [ "$(turns_done "$CREW_PANE")" -gt "$crew" ] && [ "$(turns_done "$MATE_PANE")" -gt "$mate" ] \
+      && [ "$(turns_done "$CONTROL_PANE")" -gt "$control" ]
+  }
+  fm_test_wait_until --seconds 180 all_replied || fail "the agents never answered the follow-up: $1"
+}
+follow_up_all 'Give one small README improvement in one sentence. Do not run any tools.'
+follow_up_all 'Give one more, different README improvement in one sentence. Do not run any tools.'
 # Herdr records the resumable session reference from the integration hook; give
 # the transcript and that report a moment to land before the restart.
 sleep 10
@@ -215,7 +263,10 @@ sleep 10
 "$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION" >/dev/null || fail 'could not stop the lab for the restore'
 provision_polluted
 
-both_resumed() { [ -n "$(claude_under "$CREW_PANE")" ] && [ -n "$(claude_under "$MATE_PANE")" ]; }
+both_resumed() {
+  [ -n "$(claude_under "$CREW_PANE")" ] && [ -n "$(claude_under "$MATE_PANE")" ] \
+    && [ -n "$(claude_under "$CONTROL_PANE")" ]
+}
 fm_test_wait_until --seconds 120 both_resumed \
   || fail "Herdr did not resume both Claude panes after the restart ($(herdr --version 2>/dev/null), claude $CLAUDE_VERSION)"
 CREW_PID=$(claude_under "$CREW_PANE")
@@ -231,3 +282,20 @@ pass "live: Herdr resumed both Claude agents ($(herdr --version 2>/dev/null), cl
 assert_proc_lacks_identity "$CREW_PID" 'the resumed crewmate'
 assert_proc_lacks_identity "$MATE_PID" 'the resumed secondmate'
 pass 'live: resumed agents run in their own worktree or home with no other session identity'
+
+follow_up_all 'Suggest one small next step for a README file in one sentence. Do not run any tools.'
+control_ghost() {
+  [ -n "$(composer_text "$CONTROL_PANE")" ] \
+    && lab pane read "$CONTROL_PANE" --source visible --format ansi 2>/dev/null \
+      | grep -a '❯' | tail -1 | grep -aq $'\e\[2m'
+}
+fm_test_wait_until --seconds 120 control_ghost \
+  || fail "the control Claude showed no ghost suggestion after the restore, so the suppression check would pass blind (claude $CLAUDE_VERSION)"$'\n'"$(lab_screen "$CONTROL_PANE" | grep -v '^[[:space:]]*$' | tail -12)"
+# The workers finished their follow-up alongside the control; give a late
+# suggestion the same room to render before reading their composers.
+sleep 15
+[ -z "$(composer_text "$CREW_PANE")" ] \
+  || fail "the resumed crewmate shows a ghost suggestion: '$(composer_text "$CREW_PANE")'"
+[ -z "$(composer_text "$MATE_PANE")" ] \
+  || fail "the resumed secondmate shows a ghost suggestion: '$(composer_text "$MATE_PANE")'"
+pass "live: resumed agents show no prompt suggestion while the control resumed beside them does (claude $CLAUDE_VERSION)"
