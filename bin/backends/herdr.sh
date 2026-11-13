@@ -1945,6 +1945,41 @@ fm_backend_herdr_agent_state() {  # <target>
   esac
 }
 
+# fm_backend_herdr_agent_argv: see fm_backend_agent_argv in bin/fm-backend.sh.
+# Herdr's pane process-info lists the pane's foreground processes with their
+# exact argv arrays (verified on Herdr 0.8.2), so no argument is ever split or
+# joined here. The process-info response must echo the same pane id, and the
+# matching process's name or argv[0] must carry <harness> as its basename or as
+# an exact install-path component.
+fm_backend_herdr_agent_argv() {  # <target> <harness>
+  local target=$1 harness=$2 info rows count
+  fm_backend_herdr_parse_target "$target" || return 1
+  info=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane process-info \
+    --pane "$FM_BACKEND_HERDR_PANE" 2>/dev/null) || return 1
+  printf '%s' "$info" | jq -e --arg pane "$FM_BACKEND_HERDR_PANE" '
+    .result.type == "pane_process_info"
+    and .result.process_info.pane_id == $pane
+    and (.result.process_info.foreground_processes | type == "array")
+  ' >/dev/null 2>&1 || return 1
+  rows=$(printf '%s' "$info" | jq -r --arg h "$harness" '
+    def named($p): ($p // "" | tostring) as $s
+      | (($s | split("/") | last) == $h) or ($s | split("/") | index($h) != null);
+    [.result.process_info.foreground_processes[]
+      | select(.argv | type == "array" and length > 0)
+      | select(named(.name) or named(.argv0 // .argv[0]))]
+    | if length == 1 then .[0].argv[] | tostring | gsub("\n"; " ") else empty end
+  ' 2>/dev/null) || return 1
+  [ -n "$rows" ] || return 1
+  count=$(printf '%s' "$info" | jq -r --arg h "$harness" '
+    def named($p): ($p // "" | tostring) as $s
+      | (($s | split("/") | last) == $h) or ($s | split("/") | index($h) != null);
+    [.result.process_info.foreground_processes[]
+      | select(named(.name) or named(.argv0 // .argv[0]))] | length
+  ' 2>/dev/null) || return 1
+  [ "$count" = 1 ] || return 1
+  printf '%s\n' "$rows"
+}
+
 # Backward-compatible three-state view for callers that only need a yes/no
 # agent verdict. The detailed state contract is owned by fm_backend_agent_state.
 fm_backend_herdr_agent_alive() {  # <target>

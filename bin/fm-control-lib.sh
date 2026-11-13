@@ -40,7 +40,9 @@
 # and claude, pi, pi-signed, and kimi have no verified pane-resume contract at
 # all. `relaunch` covers the same need deterministically for every adapter,
 # because the brief on disk - not a harness-private session - is the durable
-# instruction.
+# instruction. `restore-bypass` is the one verified Claude-only exception: it
+# resumes the session id the live agent's own arguments carry, and it acts
+# only under a captain /sailsup approval (bin/fm-sailsup-lib.sh).
 
 # The complete control-plane verb allowlist, one per line.
 fm_control_verbs() {
@@ -48,12 +50,13 @@ fm_control_verbs() {
 interrupt
 exit
 relaunch
+restore-bypass
 EOF
 }
 
 fm_control_verb_allowed() {  # <verb>
   case "${1-}" in
-    interrupt|exit|relaunch) return 0 ;;
+    interrupt|exit|relaunch|restore-bypass) return 0 ;;
   esac
   return 1
 }

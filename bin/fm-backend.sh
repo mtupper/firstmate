@@ -895,6 +895,23 @@ fm_backend_agent_state() {  # <backend> <target>
   esac
 }
 
+# fm_backend_agent_argv: the live command-line arguments of the one foreground
+# process in <target> whose executable identity names <harness>, one argument
+# per line (an embedded newline is folded to a space). Fails when the backend
+# cannot read process arguments, the endpoint is unreadable, or zero or several
+# matching processes run there, so a caller can never attribute another
+# process's arguments to the agent. Only tmux and herdr implement it; every
+# other backend fails. bin/fm-permission-mode-lib.sh is the consumer.
+fm_backend_agent_argv() {  # <backend> <target> <harness>
+  local backend=$1 target=$2 harness=$3
+  fm_backend_source "$backend" || return 1
+  case "$backend" in
+    tmux) fm_backend_tmux_agent_argv "$target" "$harness" ;;
+    herdr) fm_backend_herdr_agent_argv "$target" "$harness" ;;
+    *) return 1 ;;
+  esac
+}
+
 # Backward-compatible three-state view for existing callers. An
 # authoritatively missing endpoint is confidently not a live agent, while every
 # ambiguous, unreadable, or unverified result stays unknown.

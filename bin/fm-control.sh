@@ -7,6 +7,7 @@
 #        fm-control.sh <task-id> relaunch [--harness <name>] [--model <name>]
 #                                         [--effort <level>]
 #                                         (--note <text> | --note-file <path>)
+#        fm-control.sh <task-id> restore-bypass --approval <sailsup-record>
 #
 # Why this exists, and how it differs from fm-send.sh. bin/fm-send.sh is the
 # DATA plane: conversational text for the agent to read, always routing-marked
@@ -50,6 +51,23 @@
 #              the prior durable record in place and reports the concrete
 #              state; it never leaves a half-transitioned task claiming to be
 #              running.
+#
+#   restore-bypass
+#              Claude only, and only under the captain's /sailsup approval for
+#              the CURRENT session (bin/fm-sailsup-lib.sh owns that record and
+#              its session scope; bin/fm-sailsup.sh is the normal caller). Puts
+#              a worker that a restore resumed below its launch bypass mode
+#              back into bypass mode by continuing the SAME Claude conversation:
+#              it reads the session id from the live agent's own arguments
+#              (bin/fm-permission-mode-lib.sh), delivers one interrupt so a
+#              parked permission prompt is declined rather than answered,
+#              exits the agent, and relaunches it through
+#              bin/fm-spawn.sh --relaunch --resume-session in the same endpoint
+#              and worktree. A worker that was mid-turn gets one note telling
+#              it to continue. Postcondition: the new agent's arguments prove
+#              bypass mode on the same session id. Already-bypass is success;
+#              an unknown mode or a missing session id refuses before anything
+#              is touched.
 #
 # Teardown and discard are NOT verbs here and never will be. `exit` stops an
 # agent and preserves everything else; removing a worktree, killing an
@@ -134,6 +152,14 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-permission-mode-lib.sh
+. "$SCRIPT_DIR/fm-permission-mode-lib.sh"
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
+# shellcheck source=bin/fm-secondmate-parent-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
+# shellcheck source=bin/fm-sailsup-lib.sh
+. "$SCRIPT_DIR/fm-sailsup-lib.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -192,6 +218,8 @@ MODEL_SET=0
 EFFORT_SET=0
 NOTE=
 NOTE_SET=0
+APPROVAL=
+APPROVAL_SET=0
 want_value=
 for a in "$@"; do
   if [ -n "$want_value" ]; then
@@ -203,6 +231,7 @@ for a in "$@"; do
       model) NEW_MODEL=$a; MODEL_SET=1 ;;
       effort) NEW_EFFORT=$a; EFFORT_SET=1 ;;
       note) NOTE=$a; NOTE_SET=1 ;;
+      approval) APPROVAL=$a; APPROVAL_SET=1 ;;
       note-file)
         [ -f "$a" ] || die "--note-file '$a' is not a readable file"
         NOTE=$(cat "$a")
@@ -222,6 +251,8 @@ for a in "$@"; do
     --note) want_value=note ;;
     --note=*) NOTE=${a#--note=}; NOTE_SET=1 ;;
     --note-file) want_value=note-file ;;
+    --approval) want_value=approval ;;
+    --approval=*) APPROVAL=${a#--approval=}; APPROVAL_SET=1 ;;
     --note-file=*)
       [ -f "${a#--note-file=}" ] || die "--note-file '${a#--note-file=}' is not a readable file"
       NOTE=$(cat "${a#--note-file=}")
@@ -231,8 +262,16 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || die "--$want_value requires a value"
+if [ "$VERB" = restore-bypass ]; then
+  [ "$HARNESS_SET" = 0 ] && [ "$MODEL_SET" = 0 ] && [ "$EFFORT_SET" = 0 ] && [ "$NOTE_SET" = 0 ] \
+    || die "restore-bypass keeps the agent's own conversation, harness, model, and effort; --harness, --model, --effort, and --note do not apply"
+  [ "$APPROVAL_SET" = 1 ] && [ -n "$APPROVAL" ] \
+    || die "restore-bypass requires --approval <record>: it acts only under the captain's /sailsup approval for this session"
+elif [ "$APPROVAL_SET" = 1 ]; then
+  die "--approval applies to 'restore-bypass' only"
+fi
 
-if [ "$VERB" != relaunch ]; then
+if [ "$VERB" != relaunch ] && [ "$VERB" != restore-bypass ]; then
   [ "$HARNESS_SET" = 0 ] && [ "$MODEL_SET" = 0 ] && [ "$EFFORT_SET" = 0 ] && [ "$NOTE_SET" = 0 ] \
     || die "--harness, --model, --effort, and --note apply to 'relaunch' only"
 fi
@@ -432,8 +471,8 @@ retire_busy_incarnation() {
 
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
 # `already-stopped` or `stopped`.
-do_exit() {
-  local state cmd verdict cancel interrupt_result=not-needed
+do_exit() {  # [always-interrupt]
+  local state cmd verdict cancel interrupt_result=not-needed interrupt_first=0
   require_state_verified_backend exit
   state=$(agent_state)
   case "$state" in
@@ -446,8 +485,16 @@ do_exit() {
     *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle command into an unattributed endpoint" ;;
   esac
   # A busy agent is interrupted first before the exit command is submitted.
-  case "$(busy_verdict)" in
-    busy*)
+  # restore-bypass always interrupts once, because a Claude agent parked on a
+  # permission prompt must have that prompt declined by the interrupt key,
+  # never answered by the Enter that submits the exit command.
+  if [ "${1:-}" = always-interrupt ]; then
+    interrupt_first=1
+  else
+    case "$(busy_verdict)" in busy*) interrupt_first=1 ;; esac
+  fi
+  case "$interrupt_first" in
+    1)
       cancel=$(deliver_interrupt) || return $?
       state=$(agent_state)
       case "$state" in
@@ -833,6 +880,104 @@ do_relaunch() {
   echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
 }
 
+# --- restore-bypass ---------------------------------------------------------
+
+RESTORE_NOTE_TEXT="Firstmate restored this worker's bypass permission mode for this session at the captain's /sailsup request, which needed your previous turn to be interrupted. Continue your task from where you left off."
+
+# wait_bypass_verified <session>: poll the live agent's own arguments until they
+# prove bypass mode on <session>. Prints the last verdict.
+wait_bypass_verified() {  # <session>
+  local want=$1 verdict elapsed=0
+  while :; do
+    verdict=$(fm_permission_mode_task "$META" "$ID")
+    if [ "$verdict" = "bypass session=$want" ]; then
+      printf '%s' "$verdict"
+      return 0
+    fi
+    awk -v e="$elapsed" -v t="$LAUNCH_WAIT" 'BEGIN{exit !(e < t)}' || break
+    sleep "$POLL"
+    elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
+  done
+  printf '%s' "$verdict"
+  return 1
+}
+
+do_restore_bypass() {
+  local reason verdict session exit_result was_busy=no note_line state
+  local -a spawn_args
+  require_state_verified_backend restore-bypass
+  [ "$HARNESS" = claude ] \
+    || die "task $ID runs on $HARNESS; restore-bypass is verified for Claude agents only"
+  case "$KIND" in
+    ship|scout|secondmate) ;;
+    *) die "task $ID records kind '$KIND', which has no defined restore shape" ;;
+  esac
+  reason=$(fm_sailsup_approval_check "$STATE" "$APPROVAL" "$ID") \
+    || die "refusing restore-bypass for $ID: $reason"
+  verdict=$(fm_permission_mode_task "$META" "$ID")
+  case "$verdict" in
+    bypass*)
+      echo "already-bypass $ID backend=$BACKEND endpoint=$T"
+      return 0
+      ;;
+    reduced*) ;;
+    *) die "task $ID's permission mode reads '$verdict'; restore-bypass acts only on a positively read reduced agent" ;;
+  esac
+  session=$(fm_permission_verdict_field "$verdict" session)
+  [ -n "$session" ] && [ "$session" != none ] \
+    || die "task $ID runs in reduced mode, but its live arguments carry no resumable session id, so its conversation cannot be continued; use '$ID relaunch' with a progress note instead"
+
+  PRIOR_MODEL=$(fm_meta_get "$META" model)
+  PRIOR_EFFORT=$(fm_meta_get "$META" effort)
+  [ -n "$PRIOR_MODEL" ] || PRIOR_MODEL=default
+  [ -n "$PRIOR_EFFORT" ] || PRIOR_EFFORT=default
+  TARGET_HARNESS=claude
+  TARGET_MODEL=$PRIOR_MODEL
+  TARGET_EFFORT=$PRIOR_EFFORT
+  case "$(busy_verdict)" in busy*) was_busy=yes ;; esac
+  [ ! -e "$STATE/$ID.permission-wait" ] || was_busy=yes
+
+  safe_checkpoint
+  cp -p "$META" "$META_PRIOR" || die "could not preserve task $ID's durable record before restoring bypass mode"
+  RELAUNCH_ACTIVE=1
+  journal_write checkpoint "verb=restore-bypass" "approval=$APPROVAL" "resume_session=$session" "${CHECKPOINT_LINES[@]}"
+  note_line="note=none"
+  if [ "$was_busy" = yes ]; then
+    printf '%s\n' "$RESTORE_NOTE_TEXT" > "$NOTE_FILE"
+    note_line="note_file=$NOTE_FILE"
+  fi
+  journal_write stopping "verb=restore-bypass" "approval=$APPROVAL" "resume_session=$session" "${CHECKPOINT_LINES[@]}" "$note_line"
+  exit_result=$(do_exit always-interrupt)
+  journal_write exited "verb=restore-bypass" "approval=$APPROVAL" "resume_session=$session" "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
+
+  RELAUNCH_TX="${BASHPID:-$$}.$(date -u +%Y%m%dT%H%M%SZ).$RANDOM"
+  journal_write launching "verb=restore-bypass" "approval=$APPROVAL" "resume_session=$session" "${CHECKPOINT_LINES[@]}" "$note_line" "relaunch_tx=$RELAUNCH_TX"
+  spawn_args=("$ID" --relaunch --harness claude --resume-session "$session")
+  [ "$TARGET_MODEL" = default ] || spawn_args+=(--model "$TARGET_MODEL")
+  [ "$TARGET_EFFORT" = default ] || spawn_args+=(--effort "$TARGET_EFFORT")
+  [ "$was_busy" = no ] || spawn_args+=(--resume-note-file "$NOTE_FILE")
+  if FM_CONTROL_RELAUNCH_TX="$RELAUNCH_TX" \
+      "$SCRIPT_DIR/fm-spawn.sh" "${spawn_args[@]}" >/dev/null; then
+    RELAUNCH_META_PUBLISHED=1
+  else
+    [ "$(fm_meta_get "$META" control_relaunch_tx)" != "$RELAUNCH_TX" ] \
+      || RELAUNCH_META_PUBLISHED=1
+    die "the bypass-mode resume of $ID's Claude session $session could not be launched"
+  fi
+  state=$(wait_agent_state "$LAUNCH_WAIT" alive) || {
+    die "the bypass-mode resume of $ID did not come up within ${LAUNCH_WAIT}s (endpoint reads '$state')"
+  }
+  RELAUNCH_AGENT_CONFIRMED=1
+  verdict=$(wait_bypass_verified "$session") || {
+    die "$ID's agent is running again, but its live arguments do not prove bypass mode on session $session (read: $verdict)"
+  }
+  # The prompt this worker may have been parked on is gone with the old agent.
+  "$SCRIPT_DIR/fm-claude-permission-hook.sh" clear "$STATE" "$ID" </dev/null || true
+  journal_write complete "verb=restore-bypass" "approval=$APPROVAL" "resume_session=$session" "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
+  RELAUNCH_ACTIVE=0
+  echo "bypass-restored $ID session=$session interrupted-turn=$was_busy backend=$BACKEND endpoint=$T worktree=$WT"
+}
+
 # --- verbs ------------------------------------------------------------------
 
 case "$VERB" in
@@ -858,5 +1003,8 @@ case "$VERB" in
     ;;
   relaunch)
     do_relaunch
+    ;;
+  restore-bypass)
+    do_restore_bypass
     ;;
 esac

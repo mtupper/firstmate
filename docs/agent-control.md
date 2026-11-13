@@ -33,6 +33,7 @@ A recorded `harness=` is not always an exact adapter name: a task launched from 
 | `interrupt` | Deliver the harness's verified interrupt sequence while leaving the agent running. | Delivery succeeds while the endpoint still exists and the agent is still alive where the backend can classify that; cancellation is confirmed only from an adapter-owned acknowledgement and otherwise reports `cancel=unconfirmed`. |
 | `exit` | Stop the agent, preserving the endpoint, the worktree, and every uncommitted change. | The backend's recovery-grade classifier reports the agent gone. Already-stopped is idempotent success. |
 | `relaunch` | Replace the running agent with a new one in the same endpoint and worktree, on the exact recorded adapter or an explicitly chosen harness, model, and effort. | The new agent is alive on the recorded endpoint, and the durable record names the harness that is actually running. |
+| `restore-bypass` | Claude only, and only under the captain's current-session `/sailsup` approval: continue the same Claude conversation in bypass mode after a restore resumed it in default mode. One interrupt declines any parked permission prompt, the agent exits, and it resumes through `bin/fm-spawn.sh --relaunch --resume-session`; an interrupted turn gets one note to continue. | The new agent's own arguments prove bypass mode on the same session id. Already-bypass is success; an unknown mode, a missing session id, or an approval from another session refuses before anything is touched. |
 
 An exit that delivers lifecycle input but cannot prove the agent stopped fails with `exit=unconfirmed`, reports the observed agent state and any interrupt cancellation claim, and never claims that nothing changed.
 Interrupt never rewrites busy state as proof of its own success.
@@ -50,6 +51,7 @@ Removing a worktree, closing an endpoint, or discarding work stays with [`bin/fm
 **`resume` is not a verb.**
 It is not deterministic across the verified adapters: codex and grok resume only from a session id printed at exit, opencode continues the most recent session for the cwd, and claude, pi, pi-signed, and kimi have no verified pane-resume contract.
 `relaunch` covers the same need on every adapter, because the brief on disk - not a harness-private session - is the durable instruction.
+`restore-bypass` is the one Claude-only exception: it resumes the session id the live agent's own arguments carry, which a Herdr restore always records, and it changes nothing but the permission mode.
 
 ## Transactional relaunch
 

@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, PR_CHECK_MIGRATION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
+  Use whenever the session-start digest's bootstrap or network-checks section prints an actionable diagnostic line - MISSING, MISSING_MANUAL, BACKEND_INVALID, NEEDS_GH_AUTH, TANGLE, STARTUP_MEMORY_BUDGET, CREW_DISPATCH invalid, FLEET_SYNC, NETWORK_CHECKS, PR_CHECK_MIGRATION, SECONDMATE_SYNC, SECONDMATE_LIVENESS, SECONDMATE_HANDOFF, NUDGE_SECONDMATES, FMX, or PERMISSION_MODE - or when a standalone bin/fm-bootstrap.sh or bin/fm-startup-network.sh run prints one of those lines.
   A silent bootstrap section, or a BOOTSTRAP_INFO fact, means no skill load.
 user-invocable: false
 metadata:
@@ -60,3 +60,8 @@ When any diagnostic needs captain attention, report the plain consequence and re
   Inspect the reason, keep the pending marker under `state/.secondmate-nudge-pending/` intact, and rerun session start after the endpoint or metadata issue is fixed so bootstrap can retry the exact same marked send on the same local or remote route.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local Relay poll artifacts (`docs/configuration.md` "Relay (.env)"); the emitted line still carries Relay's former `X mode` wording.
   Only when a running watcher needs the cadence transition applied immediately, restart the home-scoped watcher through the emitted harness supervision protocol; bootstrap deliberately never restarts the watcher itself.
+- `PERMISSION_MODE: reduced <id> kind=<kind> session=<id|none>` - that Claude worker's live process runs below its launch bypass mode, normally because a restart or Herdr restore resumed it without the flag; `bin/fm-permission-mode-lib.sh` owns the reading.
+  Tell the captain once, in one line, which workers by their plain task description run in reduced permission mode, that they may stop at permission prompts, and that `/sailsup` approves restoring them for this session.
+  Never restore them yourself, never answer their prompts, and never treat this reminder as approval; only the captain's `/sailsup` in this session acts (`.agents/skills/sailsup/SKILL.md`).
+  In a secondmate home, send that same one-line reminder to the parent through your status instead of the captain.
+- `PERMISSION_MODE: unknown <id> kind=<kind> reason=<token>` - the worker's live permission mode could not be read, so treat it as possibly reduced: include it in the same reminder as not verified, and investigate the reason only if the worker stalls.

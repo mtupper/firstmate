@@ -17,6 +17,11 @@
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
+#                    [--resume-session <claude-session-id> [--resume-note-file <path>]]
+#   --resume-session (claude only) makes the relaunch continue that existing
+#   Claude conversation instead of starting a fresh one from the brief, with
+#   the optional note file as its next prompt; bin/fm-control.sh restore-bypass
+#   is its only caller.
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded endpoint and worktree instead of creating either. It is
 #   the launch half of the control plane (bin/fm-control.sh relaunch), which
@@ -290,6 +295,8 @@ MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
+RESUME_SESSION=
+RESUME_NOTE_FILE=
 POS=()
 want_value=
 for a in "$@"; do
@@ -305,6 +312,8 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
+      resume-session) RESUME_SESSION=$a ;;
+      resume-note-file) RESUME_NOTE_FILE=$a ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -328,6 +337,8 @@ for a in "$@"; do
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
+    --resume-session) want_value=resume-session ;;
+    --resume-note-file) want_value=resume-note-file ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -361,6 +372,23 @@ esac
 # so every axis this block resolves for a fresh spawn instead comes from that
 # task's own durable record below. Contradicting it on the command line is a
 # refusal rather than a silently-ignored flag.
+if [ -n "$RESUME_SESSION$RESUME_NOTE_FILE" ]; then
+  [ "$RELAUNCH" -eq 1 ] && [ -n "$RESUME_SESSION" ] || {
+    echo "error: --resume-session applies only to --relaunch, and --resume-note-file needs --resume-session" >&2
+    exit 1
+  }
+  case "$RESUME_SESSION" in
+    ????????-????-????-????-????????????)
+      case "$RESUME_SESSION" in *[!0-9A-Fa-f-]*) RESUME_SESSION=bad ;; esac
+      ;;
+    *) RESUME_SESSION=bad ;;
+  esac
+  [ "$RESUME_SESSION" != bad ] || { echo "error: --resume-session must be a Claude session id (a UUID)" >&2; exit 1; }
+  [ -z "$RESUME_NOTE_FILE" ] || [ -f "$RESUME_NOTE_FILE" ] || {
+    echo "error: --resume-note-file '$RESUME_NOTE_FILE' is not a readable file" >&2
+    exit 1
+  }
+fi
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "$BACKEND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded backend; --backend cannot override it" >&2; exit 1; }
   [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
@@ -1252,6 +1280,31 @@ case "$ARG3" in
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     ;;
 esac
+
+# --resume-session continues the agent's own Claude conversation in place of a
+# fresh launch-brief turn: the brief argument becomes `--resume <session-id>`,
+# optionally followed by one operational note the resumed agent reads as its
+# next prompt. Every other launch axis - the bypass flag, model, effort, and the
+# environment below - is the ordinary template's. Claude Code 2.1.311 was
+# verified to resume the same conversation this way, in bypass mode, and to
+# submit a trailing positional prompt as a new turn. bin/fm-control.sh
+# restore-bypass is the caller.
+if [ -n "$RESUME_SESSION" ]; then
+  [ "$HARNESS" = claude ] || {
+    echo "error: --resume-session is verified for the claude harness only, not '$HARNESS'" >&2
+    exit 1
+  }
+  # shellcheck disable=SC2016 # the substitution expands in the agent pane
+  resume_brief_arg='"$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+  case "$LAUNCH" in
+    *"$resume_brief_arg"*) ;;
+    *) echo "error: the claude launch template has no brief argument to replace with --resume" >&2; exit 1 ;;
+  esac
+  resume_tail='--resume __RESUMESESSION__'
+  # shellcheck disable=SC2016 # the substitution expands in the agent pane
+  [ -z "$RESUME_NOTE_FILE" ] || resume_tail="$resume_tail "'"$(__OPINPUT__ encode launch-brief < __RESUMENOTE__)"'
+  LAUNCH=${LAUNCH/"$resume_brief_arg"/$resume_tail}
+fi
 
 # muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
 # instance, so it needs a primary supervision protocol; muse has none, and its
@@ -2366,6 +2419,44 @@ pin_claude_resume_env() {  # <settings.local.json>
   echo "warning: could not add the prompt-suggestions setting to $file; a resumed claude agent there may show prompt suggestions" >&2
   return 0
 }
+# A Claude agent that a restore resumed without --dangerously-skip-permissions
+# can park on a tool-permission prompt. bin/fm-claude-permission-hook.sh owns
+# turning that into a keyed blocker: PermissionRequest records it, and the next
+# prompt submission or turn end clears it.
+claude_permission_hook_cmd() {  # <request|clear>
+  printf '%s %s %s %s 2>/dev/null || true' \
+    "$(shell_quote "$FM_ROOT/bin/fm-claude-permission-hook.sh")" "$1" \
+    "$(shell_quote "$STATE_REAL")" "$(shell_quote "$ID")"
+}
+# A secondmate home's settings.local.json may hold other settings, so the same
+# hooks are merged in: any earlier firstmate permission-hook entry is replaced,
+# every other entry is kept, and an unreadable or symlinked file is left
+# untouched with a warning, exactly like pin_claude_resume_env.
+pin_claude_permission_hooks() {  # <settings.local.json>
+  local file=$1 tmp
+  if [ -L "$file" ]; then
+    echo "warning: $file is a symlink; a parked permission prompt there will not be surfaced as a blocker" >&2
+    return 0
+  fi
+  mkdir -p "$(dirname "$file")"
+  [ -e "$file" ] || printf '{}\n' > "$file"
+  tmp="$file.fm-tmp.$$"
+  if jq -e 'type == "object"' "$file" >/dev/null 2>&1 \
+     && jq --arg req "$(claude_permission_hook_cmd request)" --arg clr "$(claude_permission_hook_cmd clear)" '
+          def ours: (.hooks // []) | any(.command | tostring | contains("fm-claude-permission-hook.sh"));
+          def put($event; $cmd):
+            .hooks[$event] = ([(.hooks[$event] // [])[] | select(ours | not)]
+              + [{"hooks": [{"type": "command", "command": $cmd}]}]);
+          .hooks = (.hooks // {})
+          | put("PermissionRequest"; $req) | put("UserPromptSubmit"; $clr) | put("Stop"; $clr)
+        ' "$file" > "$tmp" 2>/dev/null \
+     && mv -f "$tmp" "$file"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  echo "warning: could not add the permission-prompt hooks to $file; a parked permission prompt there will not be surfaced as a blocker" >&2
+  return 0
+}
 if [ "$RELAUNCH" -eq 1 ]; then
   # Retire the previous incarnation's per-task harness wiring before arming the
   # new one. Without this, a harness switch would leave the old adapter's hook
@@ -2428,16 +2519,19 @@ if [ "$KIND" != secondmate ]; then
       # the turn-ended NOTIFICATION touch for the watcher. Every
       # hook command tolerates a refused event (|| true) so a stale-gen writer
       # can never break Claude's own lifecycle. The env block is the resume
-      # carrier for prompt suggestions (pin_claude_resume_env above).
+      # carrier for prompt suggestions (pin_claude_resume_env above), and the
+      # permission hooks surface a parked permission prompt
+      # (claude_permission_hook_cmd above).
       mkdir -p "$WT/.claude"
       busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
       busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source claude-hook"
-      j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit 2>/dev/null || true")
-      j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
+      j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit 2>/dev/null || true; $(claude_permission_hook_cmd clear)")
+      j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true; $(claude_permission_hook_cmd clear)")
       j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
       j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
+      j_permission=$(json_escape "$(claude_permission_hook_cmd request)")
       cat > "$WT/.claude/settings.local.json" <<EOF
-{"env":{"CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION":"false"},"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
+{"env":{"CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION":"false"},"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}],"PermissionRequest":[{"hooks":[{"type":"command","command":"$j_permission"}]}]}}
 EOF
       exclude_path '.claude/settings.local.json'
       ;;
@@ -2655,7 +2749,10 @@ EOF
   esac
 else
   case "$HARNESS" in
-    claude*) pin_claude_resume_env "$WT/.claude/settings.local.json" ;;
+    claude*)
+      pin_claude_resume_env "$WT/.claude/settings.local.json"
+      pin_claude_permission_hooks "$WT/.claude/settings.local.json"
+      ;;
   esac
 fi
 
@@ -2809,6 +2906,12 @@ LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
+if [ -n "$RESUME_SESSION" ]; then
+  LAUNCH=${LAUNCH//__RESUMESESSION__/$(shell_quote "$RESUME_SESSION")}
+  if [ -n "$RESUME_NOTE_FILE" ]; then
+    LAUNCH=${LAUNCH//__RESUMENOTE__/$(shell_quote "$(cd "$(dirname "$RESUME_NOTE_FILE")" && pwd -P)/$(basename "$RESUME_NOTE_FILE")")}
+  fi
+fi
 case "$HARNESS" in
   pi|pi-signed) LAUNCH=${LAUNCH//__PIBIN__/"$(shell_quote "$PI_BIN")"} ;;
   cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;

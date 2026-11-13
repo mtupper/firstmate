@@ -192,12 +192,12 @@ family_for_basename() {
     fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh|\
-    fm-herdr-restore-identity-live-e2e.test.sh)
+    fm-herdr-restore-identity-live-e2e.test.sh|fm-sailsup-live-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
     fm-backend-herdr.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
     fm-tmux-agent-liveness.test.sh|\
-    fm-control.test.sh|fm-control-relaunch.test.sh|\
+    fm-control.test.sh|fm-control-relaunch.test.sh|fm-sailsup.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|fm-env-identity.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
@@ -924,6 +924,13 @@ families_for_changed_path() {
     bin/fm-backend.sh|bin/fm-backend-hometag-lib.sh)
       printf '%s\n' backend-dispatch
       printf '%s\n' real-herdr-gated
+      ;;
+    bin/fm-permission-mode*|bin/fm-sailsup*|bin/fm-claude-permission-hook.sh)
+      # The live guard (fm-sailsup-live-e2e) is the only proof of the Claude
+      # restore, PermissionRequest, and same-session resume facts these rely on.
+      printf '%s\n' backend-dispatch
+      printf '%s\n' session-bootstrap
+      printf '%s\n' live-harness-optin
       ;;
     bin/fm-watch*|bin/fm-wake*|bin/fm-inactive-reconcile.sh|\
     bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)

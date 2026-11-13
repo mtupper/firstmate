@@ -331,6 +331,8 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Only tmux and Herdr can host the away-mode supervisor terminal.
 - A Herdr server started outside Firstmate keeps its starter's environment; a restored agent running in a firstmate home is refused by the home-identity backstop until a relaunch.
 - A restored Claude also loses these launch-only settings: it runs in the account's default permission mode instead of `--dangerously-skip-permissions`, without a `CLAUDE_CONFIG_DIR` that only its launch named, and without the task's `GOTMPDIR` and trace context; it keeps its model.
+  The reduced permission mode is deliberate and stays until the captain's per-session `/sailsup` ([`.agents/skills/sailsup/SKILL.md`](../.agents/skills/sailsup/SKILL.md)); session start names each reduced worker, and a prompt it parks on becomes a keyed blocker.
+- Herdr's restore record keeps only an agent's session reference, never its launch flags, so any other adapter Herdr resumes would also lose its autonomy flag; only Claude's reduced mode is detected and restored today, and whether Herdr resumes each other adapter is unverified.
 - An endpoint created before worktree leasing keeps its top-level shell in the project and restores there, where nothing refuses an agent of a non-firstmate project.
   A relaunch after such a restore moves that shell into the worktree; a relaunch before one does not, and a respawn always does.
 
@@ -349,6 +351,8 @@ tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
 tests/fm-herdr-restore-identity-e2e.test.sh
 FM_HERDR_RESTORE_LIVE_E2E=1 tests/fm-herdr-restore-identity-live-e2e.test.sh
+tests/fm-sailsup.test.sh
+FM_SAILSUP_LIVE_E2E=1 tests/fm-sailsup-live-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```

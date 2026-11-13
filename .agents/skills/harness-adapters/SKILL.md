@@ -204,6 +204,12 @@ Its broader dark-TRUECOLOR placeholder handling and dark-theme tradeoff are docu
 That styled capture is internal to the boolean detector only.
 `fm-peek` and every other human or LLM-facing capture path stays plain `tmux capture-pane` with no escape codes.
 
+A resume also drops `--dangerously-skip-permissions`, so a restored Claude worker runs in the account's default permission mode, and that is deliberate: the captain restores bypass mode per session with `/sailsup` (`.agents/skills/sailsup/SKILL.md`).
+Firstmate reads a worker's live mode from its own process arguments (`bin/fm-permission-mode-lib.sh`), never from task metadata, and the session-start digest names each reduced worker.
+Claude Code 2.1.311 fires `PermissionRequest` the moment a tool-permission prompt renders, with the session's live `permission_mode` in the payload, so the worker's settings file routes it to `bin/fm-claude-permission-hook.sh`, which raises one keyed blocker and never answers the prompt.
+`claude --resume <id> --dangerously-skip-permissions [prompt]` continues that same conversation in bypass mode and submits the optional prompt as a new turn, which is the one path `bin/fm-control.sh <id> restore-bypass` uses.
+A single Escape at a permission prompt declines it.
+
 **Primary-session guard fact (verified 2026-07-04, Claude Code 2.1.201; preserved 2026-07-08, Claude Code 2.1.204; Stop-owned auto-arm revalidated 2026-07-24, Claude Code 2.1.219).**
 This is separate from the per-task crewmate turn-end hook above (that one just `touch`es a marker file in a task's own `.claude/settings.local.json`).
 The firstmate PRIMARY's own `.claude/settings.json` registers two Stop hooks: `bin/fm-turnend-guard.sh --claude` and the Stop-owned auto-arm `bin/fm-claude-stop-autoarm.sh` (`asyncRewake: true`, `timeout: 28800`), and exiting the guard with status 2 plus stderr reliably forces the model to continue.
