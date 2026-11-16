@@ -777,7 +777,7 @@ EOF
   assert_contains "$out" "read-only session must leave restore work" "read-only tangle diagnostic did not explain restore ownership"
   assert_contains "$out" "Stay read-only: do not arm" "read-only next step did not block direct watcher repair"
   assert_not_contains "$out" "drain them with bin/fm-wake-drain.sh" "read-only guard printed a mutating drain instruction"
-  assert_not_contains "$out" "After draining queued wakes" "read-only guard printed a drain-then-rearm instruction"
+  assert_not_contains "$out" "After draining, handling, and acknowledging queued wakes" "read-only guard printed a drain-then-rearm instruction"
   assert_not_contains "$out" "run bin/fm-watch-arm.sh" "read-only guard printed a mutating watcher-arm instruction"
   assert_not_contains "$out" "git -C $root checkout main" "read-only bootstrap printed a state-changing checkout remediation"
 

@@ -5,18 +5,18 @@
 # First, always warn if the firstmate primary checkout (FM_ROOT) is on a named
 # non-default branch, because that means firstmate-on-itself work landed in the
 # primary instead of an isolated worktree.
-# Then, if a task is in flight (a state/<id>.meta exists) or X-mode relay
-# polling is active (state/x-watch.check.sh exists) and supervision is not
-# healthy, prints a loud, clearly delimited banner so the agent cannot skim past
-# it in the tool output of whatever it was doing - the one channel every harness
-# has. Supervision health is MODEL-AWARE (fm_watcher_supervision_verdict in
-# bin/fm-wake-lib.sh): under the Claude Stop auto-arm model the watcher runs only
-# between turns, so mid-turn a fresh beacon with no live watcher is healthy and
-# only a stale beacon (beyond FM_GUARD_GRACE) is a genuine lapse; under the Pi
-# extension model the extension tears the watcher down and respawns it on every
-# actionable wake, so a fresh beacon with a genuinely unheld lock is healthy
-# while that live Pi session provably owns continuity; any held but unhealthy
-# lock is down; under every
+# Then, if the home needs supervision (fm_supervision_status in
+# bin/fm-supervision-lib.sh owns that need; docs/turnend-guard.md documents it)
+# and supervision is not healthy, prints a loud, clearly delimited banner so the
+# agent cannot skim past it in the tool output of whatever it was doing - the one
+# channel every harness has. Supervision health is MODEL-AWARE
+# (fm_watcher_supervision_verdict in bin/fm-wake-lib.sh): under the Claude Stop
+# auto-arm model the watcher runs only between turns, so mid-turn a fresh beacon
+# with no live watcher is healthy and only a stale beacon (beyond FM_GUARD_GRACE)
+# is a genuine lapse; under the Pi extension model the extension tears the
+# watcher down and respawns it on every actionable wake, so a fresh beacon with a
+# genuinely unheld lock is healthy while that live Pi session provably owns
+# continuity; any held but unhealthy lock is down; under every
 # persistent-watcher harness a live identity-matched watcher with a fresh beacon
 # is required. The banner names the true failing condition (a missing live
 # watcher process vs a genuinely stale beacon). The full banner is emitted once
@@ -37,7 +37,6 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 GRACE=${FM_GUARD_GRACE:-300}
-queue_pending=false
 READ_ONLY=${FM_GUARD_READ_ONLY:-0}
 case "$READ_ONLY" in 1|true|TRUE|yes|YES) READ_ONLY=1 ;; *) READ_ONLY=0 ;; esac
 CONTINUE_LINE=${FM_GUARD_CONTINUE_LINE:-This is a supervision warning only; the guarded operation WILL still run.}
@@ -150,10 +149,8 @@ fi
 
 # Compute supervision need and watcher-beacon freshness via the shared
 # grace-based predicate (bin/fm-supervision-lib.sh). Act when work, an event
-# source, or an X-mode relay poll needs supervision.
+# source, an X-mode relay poll, or an unacknowledged queued wake needs supervision.
 fm_supervision_status "$STATE" "$GRACE"
-in_flight=$FM_SUP_IN_FLIGHT
-sources=$FM_SUP_SOURCES
 needed=$FM_SUP_NEEDED
 beacon_desc=$FM_SUP_BEACON_DESC
 fm_watcher_supervision_verdict "$STATE" "$WATCH" "$GRACE" "$FM_HOME" "$FM_ROOT"
@@ -167,7 +164,7 @@ if [ "$needed" = false ]; then
   exit 0
 fi
 
-[ -s "$FM_WAKE_QUEUE" ] && queue_pending=true
+queue_pending=$FM_SUP_QUEUE_PENDING
 
 # No fresh watcher with tasks in flight is the dangerous state: emit a prominent,
 # bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
@@ -203,13 +200,7 @@ if [ "$watcher_healthy" = false ]; then
       else
         watcher_cause=$(printf 'no watcher has a fresh beacon (last beat: %s, grace %ss)' "$beacon_desc" "$GRACE")
       fi
-      if [ "$in_flight" -gt 0 ]; then
-        printf '●  %s task(s) in flight, but %s.\n' "$in_flight" "$watcher_cause"
-      elif [ "$sources" -gt 0 ]; then
-        printf '●  %s process-event source(s) registered, but %s.\n' "$sources" "$watcher_cause"
-      else
-        printf '●  X-mode relay polling needs supervision, but %s.\n' "$watcher_cause"
-      fi
+      printf '●  %s, but %s.\n' "$FM_SUP_NEED_DESC" "$watcher_cause"
       # The Claude auto-arm records this only when the Stop hook timeout killed a
       # cycle that missed its renewal; such a kill cannot wake the session.
       if [ "$(sed -n 's/^.*outcome=\([a-z][a-z-]*\) .*$/\1/p' "$STATE/.claude-autoarm-epoch" 2>/dev/null)" = timeout-killed ]; then

@@ -115,6 +115,19 @@ printf 'watcher: FAILED - no live watcher with a fresh beacon\n'
 exit 1
 SH
       ;;
+    last-source-retires)
+      # The real watcher's contract when a home's only one-shot source fires:
+      # the source retires itself as it publishes, and the wake is durably
+      # queued BEFORE the cycle closes with its actionable reason.
+      cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >> "$FM_HOME/state/arm-ran"
+rm -f "$FM_HOME/state/procevent/"*.source
+printf '1\t1\tcheck\tprocevent:when-alert:1\tcheck: procevent when when-alert 1\n' >> "$FM_HOME/state/.wake-queue"
+printf 'check: process-event result captured: procevent:when-alert:1\n'
+exit 0
+SH
+      ;;
     switchable)
       # Slow until state/arm-fast appears, so a second invocation can be made
       # fast WITHOUT rewriting a script the first one is still executing.
@@ -288,6 +301,24 @@ test_park_delivers_actionable_wake_as_followup() {
   case "$body" in *'stale: fixture-win needs a look'*) ;; *) fail "the wake reason was not carried into the follow-up: $body" ;; esac
   case "$body" in *'fm-wake-drain.sh'*) ;; *) fail "the follow-up must tell the session to drain first: $body" ;; esac
   pass "cursor park: an actionable close is delivered as one watcher-kind follow-up"
+}
+
+# A home whose only registered source is a one-shot watch: its fire retires the
+# source, so the queued wake is the only remaining need, and the park must still
+# deliver it instead of ending the turn quietly.
+test_park_delivers_last_source_wake() {
+  local dir out body
+  dir=$(make_primary_dir "$TMP_ROOT/park-last-source")
+  mkdir -p "$dir/state/procevent"
+  : > "$dir/state/procevent/when-alert.source"
+  write_arm_fixture "$dir" last-source-retires
+  out=$(run_park "$dir")
+  [ ! -e "$dir/state/procevent/when-alert.source" ] || fail "fixture must retire the only source mid-park"
+  [ "$(kind_of_followup "$out")" = watcher ] \
+    || fail "the last source's wake must arrive as a watcher-kind follow-up, got: $out"
+  body=$(followup_of "$out")
+  case "$body" in *'process-event result captured'*) ;; *) fail "the source's wake was not carried into the follow-up: $body" ;; esac
+  pass "cursor park: the wake that retires a home's last source is still delivered"
 }
 
 test_park_never_exits_two() {
@@ -645,6 +676,7 @@ test_pretool_guards_deduplicate_and_render_cursor_deny
 test_cd_guard_renders_cursor_deny
 test_park_silent_when_nothing_in_flight
 test_park_delivers_actionable_wake_as_followup
+test_park_delivers_last_source_wake
 test_park_never_exits_two
 test_park_repair_nag_is_bounded
 test_park_repair_nag_requires_a_persisted_budget

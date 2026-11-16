@@ -18,8 +18,9 @@
 #   - AFK: while state/.afk exists the away daemon owns the watcher and triage;
 #     this hook exits 0 and NEVER rewakes the primary (checked again at
 #     translation time so a mid-cycle AFK transition is honored).
-#   - Need: arms only while work is in flight (state/*.meta) or X mode has a
-#     relay poll to run (state/x-watch.check.sh); an idle home exits 0.
+#   - Need: arms only while bin/fm-supervision-lib.sh reports supervision need
+#     (in-flight work, a Relay poll, a registered process-event source, or an
+#     unacknowledged queued wake); an idle home exits 0.
 #   - Single-flight: Claude does not dedupe async hooks, so a home-scoped owner
 #     lock (state/.claude-autoarm.lock) admits exactly one owner; every other
 #     concurrent firing exits 0 without translating, which keeps one event
@@ -126,7 +127,7 @@ fi
 # --- AFK: the away daemon owns the watcher and triage; never rewake ----------
 [ -e "$STATE/.afk" ] && exit 0
 
-# --- need: in-flight work or an X-mode relay poll ----------------------------
+# --- need: the shared supervision predicate -----------------------------------
 need_supervision() {
   fm_supervision_needed "$STATE" "$GRACE"
 }
@@ -272,7 +273,9 @@ while [ "$attempt" -lt "$AUTOARM_ATTEMPTS" ]; do
 done
 
 # The need may have vanished mid-cycle (fleet torn down, X opted out): nothing
-# left to supervise, so close quietly instead of waking the model.
+# left to supervise, so close quietly instead of waking the model. An actionable
+# close always leaves its wake queued, which keeps the need true here even when
+# that wake retired the home's last one-shot source.
 if ! need_supervision; then
   write_epoch clean
   [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true

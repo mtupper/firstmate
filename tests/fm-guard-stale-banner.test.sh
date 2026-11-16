@@ -254,7 +254,7 @@ test_queued_wake_warning_stays_independent() {
   out1=$(run_guard_case "$dir")
   [ "$(count_text "$out1" "WATCHER DOWN - SUPERVISION IS OFF")" -eq 1 ] \
     || fail "first stale call did not print the full banner before queued wake case: $out1"
-  printf 'signal: %s/state/task.status\n' "$home" > "$home/state/.wake-queue"
+  printf '1700000000\t1\tsignal\ttask\tsignal: %s/state/task.status\n' "$home" > "$home/state/.wake-queue"
   out2=$(run_guard_case "$dir")
   assert_contains "$out2" "full banner already printed this episode" \
     "same-episode stale call should still print its concise reminder"

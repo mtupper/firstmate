@@ -136,6 +136,20 @@ printf 'signal: task.status done: fixture\n'
 exit 0
 SH
       ;;
+    last-source-retires)
+      # The real watcher's contract when a home's only one-shot source fires:
+      # the source retires itself as it publishes, and the wake is durably
+      # queued BEFORE the cycle closes with its actionable reason.
+      cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+echo "$$" >> "$FM_HOME/state/arm-ran"
+rm -f "$FM_HOME/state/procevent/"*.source
+printf '1\t1\tcheck\tprocevent:when-alert:1\tcheck: procevent when when-alert 1\n' >> "$FM_HOME/state/.wake-queue"
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+printf 'check: process-event result captured: procevent:when-alert:1\n'
+exit 0
+SH
+      ;;
     afk-appears)
       cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
@@ -547,6 +561,36 @@ test_need_vanished_mid_cycle_closes_quietly() {
   pass "auto-arm: need vanishing mid-cycle closes without a rewake"
 }
 
+# The reproduced incident: a home whose only registered source is a one-shot
+# watch. Its fire retires the source, so the queued wake is the only remaining
+# supervision need, and it must still reach the session as a rewake.
+test_last_source_retiring_still_rewakes() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/last-source")
+  mkdir -p "$dir/state/procevent"
+  : > "$dir/state/procevent/when-alert.source"
+  write_arm_fixture "$dir" last-source-retires
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  [ ! -e "$dir/state/procevent/when-alert.source" ] || fail "fixture must retire the only source mid-cycle"
+  expect_code 2 "$status" "the last source's own queued wake must still rewake the session"
+  assert_contains "$out" "check: process-event result captured" "rewake must carry the retired source's wake"
+  [ "$(epoch_outcome "$dir")" = rewake ] || fail "epoch must record outcome=rewake, got: $(epoch_outcome "$dir")"
+  pass "auto-arm: the wake that retires a home's last source still rewakes the session"
+}
+
+# Once the handling turn acknowledges that wake, nothing is left to supervise:
+# the next Stop must stay idle instead of arming an endless cycle.
+test_acknowledged_queue_winds_down() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/acked-queue")
+  : > "$dir/state/.wake-queue"
+  write_arm_fixture "$dir" actionable
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 0 "$status" "an empty acknowledged queue with no other need must not rewake"
+  [ ! -e "$dir/state/arm-ran" ] || fail "hook armed a cycle with nothing left to supervise"
+  pass "auto-arm: an acknowledged queue with no other need winds supervision down"
+}
+
 test_afk_mid_cycle_suppresses_rewake() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/afk-mid")
@@ -679,6 +723,38 @@ test_quiet_real_cycle_renews_before_hook_timeout() {
   pass "auto-arm: a quiet real watcher cycle renews before the hook timeout, twice in a row, with no resurfaced wake"
 }
 
+# End to end with the real watcher and a real one-shot condition watch that is
+# the home's only registered source. The fire retires the source before the
+# watcher delivers its result, which used to close the hook as idle and leave
+# the wake queued until an unrelated message arrived. After the handling turn
+# drains and acknowledges it, the next Stop winds supervision down.
+test_real_last_source_fire_rewakes_then_winds_down() {
+  local dir
+  dir=$(make_primary_dir "$TMP_ROOT/real-last-source")
+  cp -R "$ROOT/bin/." "$dir/bin/"
+  write_hook_registration "$dir" 120
+  printf '%s\n' fm-pr-check-migration-scan-v1 > "$dir/state/.pr-check-migration-scan-v1"
+  printf '%s\n' fm-pr-check-migration-v1 > "$dir/state/.pr-check-migration-v1"
+  chmod 0600 "$dir/state/.pr-check-migration-scan-v1" "$dir/state/.pr-check-migration-v1"
+  (cd "$dir" && FM_HOME="$dir" "$dir/bin/fm-procevent-when.sh" arm alert --interval 0.2 --stable 1 \
+    --condition /usr/bin/true --action /usr/bin/true) >/dev/null 2>&1 \
+    || fail "could not arm the one-shot condition watch"
+  export FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999
+  run_autoarm_under_hook_timeout "$dir" 90
+  [ "$HOOK_RC" -eq 2 ] \
+    || fail "the last source's fire must rewake the session, got rc=$HOOK_RC after ${HOOK_ELAPSED}s: $(cat "$dir/hook.out")"
+  assert_contains "$(cat "$dir/hook.out")" "process-event result captured" "rewake must carry the source's result"
+  [ -z "$(ls "$dir/state/procevent/"*.source 2>/dev/null)" ] || fail "the one-shot source must have retired itself"
+  [ "$(epoch_outcome "$dir")" = rewake ] || fail "epoch must record outcome=rewake, got: $(epoch_outcome "$dir")"
+  drain_and_ack_home "$dir" || fail "the handling turn could not drain and acknowledge the wake"
+  run_autoarm_under_hook_timeout "$dir" 30
+  [ "$HOOK_RC" -eq 0 ] || fail "after the acknowledgement the next Stop must stay idle, got rc=$HOOK_RC: $(cat "$dir/hook.out")"
+  ! watch_lock_holder_alive "$dir" || fail "an idle home must not keep a watcher running"
+  (cd "$dir" && FM_HOME="$dir" "$dir/bin/fm-procevent.sh" sweep-home) >/dev/null 2>&1 || true
+  unset FM_POLL FM_SIGNAL_GRACE FM_CHECK_INTERVAL FM_HEARTBEAT
+  pass "auto-arm: a real one-shot source fire on its own rewakes, then supervision winds down after acknowledgement"
+}
+
 # When the arm misses its lifetime and Claude's timeout kills the tree, the
 # hook cannot rewake; it records the cause for the watcher-down alarm instead.
 # An earlier TERM is ordinary session teardown and records nothing.
@@ -723,7 +799,10 @@ test_arms_for_x_mode_poll_need_without_inflight
 test_single_flight_admits_exactly_one_owner
 test_need_vanished_mid_cycle_closes_quietly
 test_afk_mid_cycle_suppresses_rewake
+test_last_source_retiring_still_rewakes
+test_acknowledged_queue_winds_down
 test_active_in_marked_secondmate_home
 test_fm_lock_status_still_works_with_shared_lib
 test_quiet_real_cycle_renews_before_hook_timeout
+test_real_last_source_fire_rewakes_then_winds_down
 test_missed_renewal_records_timeout_kill

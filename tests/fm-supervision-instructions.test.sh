@@ -50,7 +50,7 @@ test_repair_lines() {
   assert_contains "$out" "bin/fm-watch-checkpoint.sh --seconds 7" "codex repair line did not use checkpoint helper and env override"
 
   out=$(FM_HOME="$home" "$RENDER" --harness claude --queue-pending 1 --repair-line)
-  assert_contains "$out" "After draining queued wakes" "queue-pending prefix missing"
+  assert_contains "$out" "After draining, handling, and acknowledging queued wakes, " "queue-pending prefix missing"
   assert_contains "$out" "watcher supervision needs Stop-owned automatic recovery" "claude pre-verification repair line is not neutral"
   assert_not_contains "$out" "is broken" "claude pre-verification repair line claimed a verified mechanism failure"
   assert_not_contains "$out" "FAILED" "claude pre-verification repair line emitted a verified failure notice"
