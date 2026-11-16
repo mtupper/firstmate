@@ -336,7 +336,9 @@ while [ "$attempt" -lt "$ARM_ATTEMPTS" ]; do
 done
 
 # The need may have vanished while parked - the fleet was torn down, or Relay
-# was opted out. Nothing left to supervise, so end the turn quietly.
+# was opted out. Nothing left to supervise, so end the turn quietly. An
+# actionable close always leaves its wake queued, which keeps the need true here
+# even when that wake retired the home's last one-shot source.
 if ! fm_supervision_needed "$STATE" "$GRACE"; then
   budget_reset_if_ours
   exit 0

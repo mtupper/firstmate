@@ -71,10 +71,29 @@ test_predicate_queue_pending_flag() {
   mkdir -p "$state"
   fm_supervision_status "$state" 300
   [ "$FM_SUP_QUEUE_PENDING" = false ] || fail "empty/absent wake queue must not read as pending"
+  [ "$FM_SUP_NEEDED" = false ] || fail "an empty wake queue alone must not need supervision"
+  : > "$state/.wake-queue"
+  fm_supervision_status "$state" 300
+  [ "$FM_SUP_QUEUE_PENDING" = false ] || fail "an acknowledged, emptied wake queue must not read as pending"
+  [ "$FM_SUP_NEEDED" = false ] || fail "an acknowledged, emptied wake queue must not need supervision"
   printf 'record\n' > "$state/.wake-queue"
   fm_supervision_status "$state" 300
   [ "$FM_SUP_QUEUE_PENDING" = true ] || fail "a non-empty wake queue must read as pending"
   pass "fm_supervision_status: FM_SUP_QUEUE_PENDING tracks state/.wake-queue"
+}
+
+# A one-shot source retires itself as it publishes, so the queued wake can be a
+# home's only remaining need. It must keep supervision required until the
+# handling turn acknowledges it.
+test_predicate_queued_wake_needs_supervision() {
+  local state="$TMP_ROOT/pred-queued-wake/state"
+  mkdir -p "$state"
+  printf '1\t1\tcheck\tprocevent:when-alert:1\tcheck: procevent when when-alert 1\n' > "$state/.wake-queue"
+  fm_supervision_unhealthy "$state" 300 || fail "a queued wake with no beacon must be unhealthy"
+  [ "$FM_SUP_IN_FLIGHT" -eq 0 ] || fail "a queued wake must not count as a task"
+  [ "$FM_SUP_SOURCES" -eq 0 ] || fail "a queued wake must not count as a source"
+  assert_contains "$FM_SUP_NEED_DESC" "queued wake" "the need description must name the queued wake"
+  pass "fm_supervision_unhealthy: a queued wake alone needs supervision"
 }
 
 test_predicate_x_mode_needs_supervision() {
@@ -248,6 +267,20 @@ test_hook_blocks_source_only_home() {
   expect_code 2 "$status" "non-Claude hook must block when a source-only home has no watcher"
   assert_contains "$out" "1 process-event source(s) registered" "block reason must identify the source-only supervision need"
   pass "fm-turnend-guard: non-Claude path blocks a source-only home"
+}
+
+test_hook_blocks_queued_wake_only_home() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-queued-wake-only")
+  printf '1\t1\tcheck\tprocevent:when-alert:1\tcheck: procevent when when-alert 1\n' > "$dir/state/.wake-queue"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "non-Claude hook must block when an unhandled queued wake has no watcher"
+  assert_contains "$out" "a queued wake still awaits handling" "block reason must identify the queued wake"
+  : > "$dir/state/.wake-queue"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 0 "$status" "an acknowledged, emptied queue must let the turn end"
+  [ -z "$out" ] || fail "hook produced output after the queue was acknowledged: $out"
+  pass "fm-turnend-guard: an unhandled queued wake keeps the turn guarded until acknowledged"
 }
 
 test_hook_blocks_when_dead_lock_has_fresh_beacon() {
@@ -1623,9 +1656,11 @@ test_predicate_healthy_fresh_beacon
 test_predicate_queue_pending_flag
 test_predicate_x_mode_needs_supervision
 test_predicate_source_needs_supervision
+test_predicate_queued_wake_needs_supervision
 test_hook_silent_when_no_work_in_flight
 test_hook_blocks_when_fresh_beacon_has_no_live_lock
 test_hook_blocks_source_only_home
+test_hook_blocks_queued_wake_only_home
 test_hook_blocks_when_dead_lock_has_fresh_beacon
 test_hook_silent_with_live_lock_and_fresh_beacon
 test_hook_non_claude_health_ignores_claude_budget_contention
