@@ -1,0 +1,41 @@
+=== tree: /tmp/fm-base.c55x4S (5be8870) | scenario: last-source-only ===
+before Stop: sources registered : when-alert.source
+
+--- Stop hook: first Stop after the one-shot watch is armed ---
+exit code          : 0 (turn ends, no rewake)
+elapsed            : 8s
+epoch record       : epoch=2 owner_pid=87867 outcome=clean updated_at=1794860788
+sources registered : (none)
+queued wake rows   : 2
+    queued: seq=1 kind=check key=procevent:when-alert:1
+    queued: seq=2 kind=check key=procevent:when-alert:1
+watcher alive      : no
+hook output (model-facing rewake text, first 6 lines):
+
+--- Stop hook: a later Stop while the wake is still queued ---
+exit code          : 0 (turn ends, no rewake)
+elapsed            : 0s
+epoch record       : epoch=2 owner_pid=87867 outcome=clean updated_at=1794860788
+sources registered : (none)
+queued wake rows   : 2
+    queued: seq=1 kind=check key=procevent:when-alert:1
+    queued: seq=2 kind=check key=procevent:when-alert:1
+watcher alive      : no
+hook output (model-facing rewake text, first 6 lines):
+
+=== tree: /tmp/fm-base.c55x4S (5be8870) | scenario: with-second-source ===
+before Stop: sources registered : when-alert.source when-never.source
+
+--- Stop hook: first Stop after the one-shot watch is armed ---
+exit code          : 2 (asyncRewake: session is woken)
+elapsed            : 9s
+epoch record       : epoch=2 owner_pid=95587 outcome=rewake updated_at=1794860799
+sources registered : when-never.source
+queued wake rows   : 2
+    queued: seq=1 kind=check key=procevent:when-alert:1
+    queued: seq=2 kind=check key=procevent:when-alert:1
+watcher alive      : no
+hook output (model-facing rewake text, first 6 lines):
+    | firstmate watcher wake - one supervision event needs a handling turn now.
+    | check: process-event result captured: procevent:when-alert:1
+    | Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.

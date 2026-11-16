@@ -1,0 +1,45 @@
+# New regression tests from c54e023, run one function per process. Node v22.23.1. 12:31  up 1 day, 20 hrs, 1 user, load averages: 23.18 22.98 24.08
+
+## BEFORE: base scripts 5be8870
+not ok - the last source's own queued wake must still rewake the session: expected exit 2, got 0
+  -> test_last_source_retiring_still_rewakes rc=1 (2s)
+ok - auto-arm: an acknowledged queue with no other need winds supervision down
+  -> test_acknowledged_queue_winds_down rc=0 (1s)
+not ok - the last source's fire must rewake the session, got rc=0 after 14s: 
+  -> test_real_last_source_fire_rewakes_then_winds_down rc=1 (15s)
+not ok - the last source's wake must arrive as a watcher-kind follow-up, got: 
+  -> test_park_delivers_last_source_wake rc=1 (4s)
+ok - fm_supervision_status: FM_SUP_QUEUE_PENDING tracks state/.wake-queue
+  -> test_predicate_queue_pending_flag rc=0 (0s)
+not ok - a queued wake with no beacon must be unhealthy
+  -> test_predicate_queued_wake_needs_supervision rc=1 (0s)
+not ok - unacknowledgeable residue must not read as pending
+  -> test_predicate_unackable_residue_holds_no_need rc=1 (1s)
+not ok - non-Claude hook must block when an unhandled queued wake has no watcher: expected exit 2, got 0
+  -> test_hook_blocks_queued_wake_only_home rc=1 (1s)
+ok - fm-turnend-guard: unacknowledgeable queue residue never blocks the turn end
+  -> test_hook_silent_with_unackable_queue_residue rc=0 (2s)
+not ok - OpenCode watch plugin must follow the shared supervision need for a source-only home: expected armed, got not-needed (arm ran: false): expected exit 0, got 1
+  -> test_opencode_watch_arm_follows_shared_supervision_need rc=1 (1s)
+
+## AFTER: target scripts c54e023
+ok - auto-arm: the wake that retires a home's last source still rewakes the session
+  -> test_last_source_retiring_still_rewakes rc=0 (2s)
+ok - auto-arm: an acknowledged queue with no other need winds supervision down
+  -> test_acknowledged_queue_winds_down rc=0 (1s)
+ok - auto-arm: a real one-shot source fire on its own rewakes, then supervision winds down after acknowledgement
+  -> test_real_last_source_fire_rewakes_then_winds_down rc=0 (21s)
+ok - cursor park: the wake that retires a home's last source is still delivered
+  -> test_park_delivers_last_source_wake rc=0 (5s)
+ok - fm_supervision_status: FM_SUP_QUEUE_PENDING tracks state/.wake-queue
+  -> test_predicate_queue_pending_flag rc=0 (0s)
+ok - fm_supervision_unhealthy: a queued wake alone needs supervision
+  -> test_predicate_queued_wake_needs_supervision rc=0 (0s)
+ok - fm_supervision_status: only records the acknowledgement consumes hold need
+  -> test_predicate_unackable_residue_holds_no_need rc=0 (0s)
+ok - fm-turnend-guard: an unhandled queued wake keeps the turn guarded until acknowledged
+  -> test_hook_blocks_queued_wake_only_home rc=0 (2s)
+ok - fm-turnend-guard: unacknowledgeable queue residue never blocks the turn end
+  -> test_hook_silent_with_unackable_queue_residue rc=0 (0s)
+ok - OpenCode watcher plugin arms exactly where the shared supervision need holds
+  -> test_opencode_watch_arm_follows_shared_supervision_need rc=0 (2s)

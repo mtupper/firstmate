@@ -1,0 +1,51 @@
+=== tree: /tmp/fm-base.c55x4S (5be8870) ===
+home state: no task.meta, no procevent source, no watcher, one queued wake (seq=1 key=procevent:when-alert:1)
+
+##### A. the wake is queued and not yet acknowledged #####
+
+$ printf '{"stop_hook_active":false}' | bin/fm-turnend-guard.sh
+[exit 0: turn may end]
+
+$ bin/fm-guard.sh   (pull guard, persistent model)
+[exit 0]
+
+##### B. after the post-handling acknowledgement empties the queue #####
+
+$ printf '{"stop_hook_active":false}' | bin/fm-turnend-guard.sh
+[exit 0: turn may end]
+
+$ bin/fm-guard.sh   (pull guard, persistent model)
+[exit 0]
+
+
+=== tree: /Users/mtupper/.no-mistakes/worktrees/3f34c550a081/01M7JADAMB33TW35ADEM61478N (c54e023) ===
+home state: no task.meta, no procevent source, no watcher, one queued wake (seq=1 key=procevent:when-alert:1)
+
+##### A. the wake is queued and not yet acknowledged #####
+
+$ printf '{"stop_hook_active":false}' | bin/fm-turnend-guard.sh
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  TURN WOULD END BLIND - SUPERVISION IS OFF
+●  a queued wake still awaits handling and acknowledgement, but no live watcher holds this home lock (last beat: never).
+●  After draining, handling, and acknowledging queued wakes, watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[exit 2: turn end BLOCKED]
+
+$ bin/fm-guard.sh   (pull guard, persistent model)
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  a queued wake still awaits handling and acknowledgement, but no watcher has a fresh beacon (last beat: never, grace 999s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  After draining, handling, and acknowledging queued wakes, watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+[exit 0]
+
+##### B. after the post-handling acknowledgement empties the queue #####
+
+$ printf '{"stop_hook_active":false}' | bin/fm-turnend-guard.sh
+[exit 0: turn may end]
+
+$ bin/fm-guard.sh   (pull guard, persistent model)
+[exit 0]
