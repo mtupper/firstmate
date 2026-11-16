@@ -1238,6 +1238,12 @@ EOF
   pass "Pi process-exit cleanup stops the attached arm child"
 }
 
+# The OpenCode arm plugin asks the shared supervision predicate whether a home
+# needs a watcher, so every fixture repo that expects an arm carries it.
+install_opencode_supervision_lib() {
+  cp "$ROOT/bin/fm-supervision-lib.sh" "$1/bin/fm-supervision-lib.sh"
+}
+
 test_opencode_plugin_package_boundary_is_explicit_esm() {
   local fixture plugin out status
   fixture="$TMP_ROOT/opencode-esm-boundary/.opencode"
@@ -1268,6 +1274,7 @@ test_opencode_primary_watch_plugin_uses_effective_state_home() {
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  install_opencode_supervision_lib "$repo"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'home=%s root=%s\n' "${FM_HOME:-}" "${FM_ROOT_OVERRIDE:-}" >> "${FM_ARM_LOG:?}"
@@ -1367,6 +1374,7 @@ test_opencode_primary_watch_plugin_requires_session_lock() {
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  install_opencode_supervision_lib "$repo"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'arm\n' >> "${FM_ARM_LOG:?}"
@@ -1438,6 +1446,7 @@ test_opencode_watch_arm_coordinator_respects_primary_scope() {
   mkdir -p "$repo/bin" "$home/state" "$home/config"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  install_opencode_supervision_lib "$repo"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'arm\n' >> "${FM_ARM_LOG:?}"
@@ -1485,6 +1494,7 @@ test_opencode_primary_watch_plugin_rearms_after_wake() {
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  install_opencode_supervision_lib "$repo"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --handling-delivered ]; then
@@ -1579,6 +1589,7 @@ test_opencode_pre_ready_actionable_close_preserves_its_successor() {
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  install_opencode_supervision_lib "$repo"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 . "${FM_ARM_SEQ_LIB:?}"
@@ -1659,6 +1670,7 @@ test_opencode_hung_successor_falls_back_to_typed_wake() {
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  install_opencode_supervision_lib "$repo"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 . "${FM_ARM_SEQ_LIB:?}"
@@ -1728,6 +1740,7 @@ test_opencode_unretired_successor_falls_back_without_retry() {
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  install_opencode_supervision_lib "$repo"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 . "${FM_ARM_SEQ_LIB:?}"
@@ -1800,6 +1813,7 @@ test_opencode_late_unretired_close_resumes_supervision() {
     git init -q "$repo"
     : > "$repo/AGENTS.md"
     : > "$home/state/task.meta"
+    install_opencode_supervision_lib "$repo"
     cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 . "${FM_ARM_SEQ_LIB:?}"
@@ -1895,6 +1909,7 @@ test_opencode_empty_close_retries_instead_of_disappearing() {
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  install_opencode_supervision_lib "$repo"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 . "${FM_ARM_SEQ_LIB:?}"
@@ -1954,6 +1969,7 @@ test_opencode_established_empty_close_honors_retry_limit() {
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  install_opencode_supervision_lib "$repo"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
@@ -2008,6 +2024,7 @@ test_opencode_actionable_close_rechecks_session_lock() {
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  install_opencode_supervision_lib "$repo"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
@@ -2074,6 +2091,7 @@ test_opencode_watch_arm_coordinates_with_turnend_guard() {
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  install_opencode_supervision_lib "$repo"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'arm\n' >> "${FM_ARM_LOG:?}"
@@ -2147,6 +2165,7 @@ test_opencode_healthy_arm_output_does_not_suppress_guard() {
   git init -q "$repo"
   : > "$repo/AGENTS.md"
   : > "$home/state/task.meta"
+  install_opencode_supervision_lib "$repo"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'args=%s\n' "$*" >> "${FM_ARM_LOG:?}"
@@ -2210,6 +2229,70 @@ EOF
   expect_code 0 "$status" "OpenCode watch plugin must not treat external healthy output as an owned arm${out:+: $out}"
   [ -z "$out" ] || fail "OpenCode external-healthy test printed output: $out"
   pass "OpenCode healthy arm output does not suppress the turn-end guard"
+}
+
+# The turn-end guard blocks whenever the shared predicate needs a watcher, so
+# the arm plugin must arm in exactly those homes. A home whose only source is a
+# one-shot watch, or whose only need is a wake its last source just queued, is
+# otherwise blocked by the guard with a repair line the plugin never honors.
+test_opencode_watch_arm_follows_shared_supervision_need() {
+  local plugin case_name expected repo home log out status
+  plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
+  for case_name in idle source-only queue-only queue-residue-only; do
+    repo="$TMP_ROOT/opencode-need-$case_name-root"
+    home="$TMP_ROOT/opencode-need-$case_name-home"
+    log="$TMP_ROOT/opencode-need-$case_name.log"
+    mkdir -p "$repo/bin" "$home/state" "$home/config"
+    git init -q "$repo"
+    : > "$repo/AGENTS.md"
+    install_opencode_supervision_lib "$repo"
+    cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+printf 'watcher: started pid=1 (beacon fresh)\n'
+SH
+    chmod +x "$repo/bin/fm-watch-arm.sh"
+    expected=armed
+    case "$case_name" in
+      idle) expected=not-needed ;;
+      source-only)
+        mkdir -p "$home/state/procevent"
+        : > "$home/state/procevent/when-alert.source"
+        ;;
+      queue-only)
+        printf '1\t1\tcheck\tprocevent:when-alert:1\tcheck: procevent when when-alert 1\n' > "$home/state/.wake-queue"
+        ;;
+      queue-residue-only)
+        expected=not-needed
+        printf '1700000000\t2\tche' > "$home/state/.wake-queue"
+        ;;
+    esac
+    out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" EXPECTED="$expected" node 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async () => {} } };
+await mod.FmPrimaryWatchArm({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const status = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+const armRan = existsSync(process.env.FM_ARM_LOG);
+if (status !== process.env.EXPECTED || armRan !== (process.env.EXPECTED === "armed")) {
+  console.error(`expected ${process.env.EXPECTED}, got ${status} (arm ran: ${armRan})`);
+  process.exit(1);
+}
+process.exit(0);
+EOF
+)
+    status=$?
+    expect_code 0 "$status" "OpenCode watch plugin must follow the shared supervision need for a $case_name home${out:+: $out}"
+    [ -z "$out" ] || fail "OpenCode $case_name need test printed output: $out"
+  done
+  pass "OpenCode watcher plugin arms exactly where the shared supervision need holds"
 }
 
 # CI flake regression: the plugin's process lost the CPU between spawning the
@@ -2317,4 +2400,5 @@ test_opencode_established_empty_close_honors_retry_limit
 test_opencode_actionable_close_rechecks_session_lock
 test_opencode_watch_arm_coordinates_with_turnend_guard
 test_opencode_healthy_arm_output_does_not_suppress_guard
+test_opencode_watch_arm_follows_shared_supervision_need
 test_opencode_turnend_guard_survives_closed_stdin_peer

@@ -127,7 +127,7 @@ repair_line() {
 
   prefix=
   if [ "$QUEUE_PENDING" -eq 1 ]; then
-    prefix='After draining queued wakes, '
+    prefix='After draining, handling, and acknowledging queued wakes, '
   fi
   if [ "$X_MODE" -eq 1 ]; then
     prefix="${prefix}source ${x_mode_env_sh} first, then "

@@ -76,10 +76,27 @@ test_predicate_queue_pending_flag() {
   fm_supervision_status "$state" 300
   [ "$FM_SUP_QUEUE_PENDING" = false ] || fail "an acknowledged, emptied wake queue must not read as pending"
   [ "$FM_SUP_NEEDED" = false ] || fail "an acknowledged, emptied wake queue must not need supervision"
-  printf 'record\n' > "$state/.wake-queue"
+  printf '1\t1\tcheck\tprocevent:when-alert:1\tcheck: procevent when when-alert 1\n' > "$state/.wake-queue"
   fm_supervision_status "$state" 300
-  [ "$FM_SUP_QUEUE_PENDING" = true ] || fail "a non-empty wake queue must read as pending"
+  [ "$FM_SUP_QUEUE_PENDING" = true ] || fail "an acknowledgeable wake record must read as pending"
   pass "fm_supervision_status: FM_SUP_QUEUE_PENDING tracks state/.wake-queue"
+}
+
+# The drain's acknowledgement consumes only well-formed records and keeps every
+# other row forever, so residue such as a truncated final append or a hand-edited
+# row must never hold supervision need, or that need could never end.
+test_predicate_unackable_residue_holds_no_need() {
+  local state="$TMP_ROOT/pred-queue-residue/state"
+  mkdir -p "$state"
+  printf 'record\n1700000000\tseq\tcheck\tkey\tpayload\n1700000000\t2\tche' > "$state/.wake-queue"
+  fm_supervision_status "$state" 300
+  [ "$FM_SUP_QUEUE_PENDING" = false ] || fail "unacknowledgeable residue must not read as pending"
+  [ "$FM_SUP_NEEDED" = false ] || fail "unacknowledgeable residue must not need supervision"
+  printf '\n1700000000\t3\tcheck\tkey\tpayload\n' >> "$state/.wake-queue"
+  fm_supervision_status "$state" 300
+  [ "$FM_SUP_QUEUE_PENDING" = true ] || fail "a well-formed record behind residue must read as pending"
+  [ "$FM_SUP_NEEDED" = true ] || fail "a well-formed record behind residue must need supervision"
+  pass "fm_supervision_status: only records the acknowledgement consumes hold need"
 }
 
 # A one-shot source retires itself as it publishes, so the queued wake can be a
@@ -276,11 +293,22 @@ test_hook_blocks_queued_wake_only_home() {
   out=$(run_hook "$dir" false); status=$?
   expect_code 2 "$status" "non-Claude hook must block when an unhandled queued wake has no watcher"
   assert_contains "$out" "a queued wake still awaits handling" "block reason must identify the queued wake"
+  assert_contains "$out" "After draining, handling, and acknowledging queued wakes, " "repair line must put the queued wake's drain and acknowledgement first"
   : > "$dir/state/.wake-queue"
   out=$(run_hook "$dir" false); status=$?
   expect_code 0 "$status" "an acknowledged, emptied queue must let the turn end"
   [ -z "$out" ] || fail "hook produced output after the queue was acknowledged: $out"
   pass "fm-turnend-guard: an unhandled queued wake keeps the turn guarded until acknowledged"
+}
+
+test_hook_silent_with_unackable_queue_residue() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-queue-residue")
+  printf '1700000000\t2\tche' > "$dir/state/.wake-queue"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 0 "$status" "residue the acknowledgement never consumes must not block the turn end"
+  [ -z "$out" ] || fail "hook produced output for unacknowledgeable queue residue: $out"
+  pass "fm-turnend-guard: unacknowledgeable queue residue never blocks the turn end"
 }
 
 test_hook_blocks_when_dead_lock_has_fresh_beacon() {
@@ -1657,10 +1685,12 @@ test_predicate_queue_pending_flag
 test_predicate_x_mode_needs_supervision
 test_predicate_source_needs_supervision
 test_predicate_queued_wake_needs_supervision
+test_predicate_unackable_residue_holds_no_need
 test_hook_silent_when_no_work_in_flight
 test_hook_blocks_when_fresh_beacon_has_no_live_lock
 test_hook_blocks_source_only_home
 test_hook_blocks_queued_wake_only_home
+test_hook_silent_with_unackable_queue_residue
 test_hook_blocks_when_dead_lock_has_fresh_beacon
 test_hook_silent_with_live_lock_and_fresh_beacon
 test_hook_non_claude_health_ignores_claude_budget_contention

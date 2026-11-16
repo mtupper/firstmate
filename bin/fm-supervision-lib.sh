@@ -4,8 +4,9 @@
 #
 # Reports whether a firstmate home needs supervision because it has in-flight
 # work (a state/<id>.meta exists), an X-mode relay poll
-# (state/x-watch.check.sh), a registered process-to-event source, or a wake still
-# held in state/.wake-queue, and whether its watcher has a fresh liveness beacon
+# (state/x-watch.check.sh), a registered process-to-event source, or a wake record
+# in state/.wake-queue that the post-handling acknowledgement can still consume,
+# and whether its watcher has a fresh liveness beacon
 # (state/.last-watcher-beat, touched every poll cycle, within the grace window).
 # A queued wake counts because the wake that retires the last source is itself
 # the one still owed delivery: without it, a home whose only one-shot source has
@@ -17,6 +18,20 @@
 # fm_watcher_supervision_verdict (also in bin/fm-wake-lib.sh), which owns what a
 # live watcher process means per supervision model. The status fields here retain
 # the beacon-age details used in their messages.
+
+# The one record-shape test for a wake-queue row that bin/fm-wake-drain.sh's
+# acknowledgement consumes: five or more tab-separated fields with a numeric
+# sequence. The drain and the need predicate below share it, so the need always
+# ends at that acknowledgement.
+# shellcheck disable=SC2016 # awk, not the shell, expands $2.
+FM_WAKE_ACKABLE_RECORD_AWK='NF >= 5 && $2 ~ /^[0-9]+$/'
+
+# fm_sup_wake_queue_ackable <queue-file>
+# Exit 0 (true) exactly when the queue holds a record the acknowledgement consumes.
+fm_sup_wake_queue_ackable() {
+  [ -s "$1" ] || return 1
+  awk -F '\t' "$FM_WAKE_ACKABLE_RECORD_AWK { found = 1; exit } END { exit !found }" "$1" 2>/dev/null
+}
 
 # Portable mtime; Linux stat lacks -f, macOS stat lacks -c.
 fm_sup_stat_mtime() {
@@ -34,12 +49,13 @@ fm_sup_stat_mtime() {
 #   FM_SUP_NEEDED         true/false - in-flight work, an X-mode relay poll, a
 #                         registered event source (a source is a wait on an
 #                         external process, not a task, so it has no metadata),
-#                         or an unacknowledged wake in state/.wake-queue
+#                         or an acknowledgeable wake in state/.wake-queue
 #   FM_SUP_NEED_DESC      human-readable reason for FM_SUP_NEEDED, for banners
 #                         (empty when supervision is not needed)
 #   FM_SUP_WATCHER_FRESH  true/false - a watcher beacon within the grace window
 #   FM_SUP_BEACON_DESC    human-readable beacon age, for banners ("never" if absent)
-#   FM_SUP_QUEUE_PENDING  true/false - state/.wake-queue holds unacknowledged records
+#   FM_SUP_QUEUE_PENDING  true/false - state/.wake-queue holds a record the
+#                         post-handling acknowledgement can still consume
 # grace-seconds defaults to $FM_GUARD_GRACE, then 300, matching fm-guard.sh.
 # Always returns 0; callers read the vars, or use fm_supervision_unhealthy below.
 fm_supervision_status() {
@@ -60,7 +76,7 @@ fm_supervision_status() {
     [ -e "$source" ] || continue
     FM_SUP_SOURCES=$((FM_SUP_SOURCES + 1))
   done
-  [ -s "$state/.wake-queue" ] && FM_SUP_QUEUE_PENDING=true
+  fm_sup_wake_queue_ackable "$state/.wake-queue" && FM_SUP_QUEUE_PENDING=true
   if [ "$FM_SUP_IN_FLIGHT" -gt 0 ]; then
     FM_SUP_NEED_DESC="$FM_SUP_IN_FLIGHT task(s) in flight"
   elif [ "$FM_SUP_SOURCES" -gt 0 ]; then

@@ -14,6 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
 # shellcheck source=bin/fm-primary-scope-lib.sh
 . "$SCRIPT_DIR/fm-primary-scope-lib.sh"
 
@@ -240,9 +242,9 @@ if [ -n "$ACK_THROUGH" ]; then
   DRAIN_LOCK_HELD=true
   DRAIN_TMP=$(mktemp "$STATE/.wake-queue.ack.XXXXXX") || exit 1
   chmod 0600 "$DRAIN_TMP" || exit 1
-  awk -F '\t' -v cutoff="$ACK_THROUGH" '
-    NF < 5 || $2 !~ /^[0-9]+$/ || $2 > cutoff { print }
-  ' "$FM_WAKE_QUEUE" > "$DRAIN_TMP" || exit 1
+  awk -F '\t' -v cutoff="$ACK_THROUGH" "
+    !($FM_WAKE_ACKABLE_RECORD_AWK) || \$2 > cutoff { print }
+  " "$FM_WAKE_QUEUE" > "$DRAIN_TMP" || exit 1
   if [ ! -s "$DRAIN_TMP" ]; then
     fm_recovery_marker_ack "$RECOVERY_MARKER" "$ACK_GENERATION"
     RECOVERY_ACK_STATUS=$?
@@ -324,7 +326,7 @@ fm_recovery_marker_begin_handling "$RECOVERY_MARKER" || {
 RECOVERY_MARKER_TOKEN=$FM_RECOVERY_MARKER_TOKEN
 
 RAW_ROWS=$(fm_wake_print_deduped "$FM_WAKE_QUEUE") || exit "$?"
-ACK_THROUGH=$(awk -F '\t' '$2 ~ /^[0-9]+$/ && $2 > max { max=$2 } END { print max + 0 }' "$FM_WAKE_QUEUE") || exit 1
+ACK_THROUGH=$(awk -F '\t' "$FM_WAKE_ACKABLE_RECORD_AWK && \$2 > max { max=\$2 } END { print max + 0 }" "$FM_WAKE_QUEUE") || exit 1
 case "${FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT:-0}" in
   0) ;;
   ''|*[!0-9]*) ;;
